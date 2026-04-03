@@ -1,0 +1,84 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isBanditore(sessionId) {
+      return isAuthenticated() && get(/databases/$(database)/documents/sessions/$(sessionId)).data.banditorId == request.auth.uid;
+    }
+
+    function isParticipant(sessionId, uid) {
+      return isAuthenticated() && exists(/databases/$(database)/documents/sessions/$(sessionId)/participants/$(uid));
+    }
+
+    function isAuctionOpen(sessionId) {
+      return get(/databases/$(database)/documents/sessions/$(sessionId)/currentAuction/state).data.status == 'open';
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /sessions/{sessionId} {
+      // Anyone authenticated can read the session (needed to join via code)
+      allow read: if isAuthenticated();
+      // Only the creator can create, and only the banditore can update
+      allow create: if isAuthenticated() && request.resource.data.banditorId == request.auth.uid;
+      allow update: if isBanditore(sessionId);
+      allow delete: if isBanditore(sessionId);
+
+      match /participants/{uid} {
+        // Anyone in the session can read participants
+        allow read: if isAuthenticated();
+        // A participant can create/update their own record. Banditore can also update (e.g., to deduct budget).
+        allow create: if isAuthenticated() && request.auth.uid == uid;
+        allow update: if isAuthenticated() && (request.auth.uid == uid || isBanditore(sessionId));
+        allow delete: if isBanditore(sessionId);
+
+        match /roster/{rosterId} {
+          allow read: if isAuthenticated();
+          // Only banditore can assign players to a roster
+          allow write: if isBanditore(sessionId);
+        }
+      }
+
+      match /players/{playerId} {
+        allow read: if isAuthenticated();
+        // Only banditore can manage players
+        allow write: if isBanditore(sessionId);
+      }
+
+      match /currentAuction/state {
+        allow read: if isAuthenticated();
+        allow create, delete: if isBanditore(sessionId);
+        // Participants can only update the bidCount field
+        allow update: if isBanditore(sessionId) || (
+          isAuthenticated() && 
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['bidCount']) &&
+          request.resource.data.bidCount == resource.data.bidCount + 1
+        );
+
+        match /bids/{uid} {
+          // A participant can read their own bid. Banditore can read all bids.
+          allow read: if isAuthenticated() && (request.auth.uid == uid || isBanditore(sessionId));
+          // A participant can write their own bid if the auction is open.
+          // Banditore can delete bids when clearing the auction.
+          allow create, update: if isAuthenticated() && request.auth.uid == uid;
+          allow delete: if isBanditore(sessionId);
+        }
+      }
+
+      match /auctionHistory/{historyId} {
+        allow read: if isAuthenticated();
+        // Only banditore can write history
+        allow write: if isBanditore(sessionId);
+      }
+    }
+  }
+}

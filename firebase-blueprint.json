@@ -1,0 +1,305 @@
+{
+  "entities": {
+    "Session": {
+      "title": "Session",
+      "description": "A fantasy football auction session",
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["lobby", "open", "closing", "revealed", "tiebreak", "completed"],
+          "description": "Current status of the session"
+        },
+        "format": {
+          "type": "string",
+          "enum": ["classic", "mantra"],
+          "description": "Format of the fantasy football league"
+        },
+        "budget": {
+          "type": "number",
+          "description": "Initial budget per participant"
+        },
+        "timerDuration": {
+          "type": "number",
+          "description": "Duration of each auction in seconds"
+        },
+        "code": {
+          "type": "string",
+          "description": "6-character uppercase access code"
+        },
+        "banditorId": {
+          "type": "string",
+          "description": "Firebase UID of the auctioneer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of creation"
+        }
+      },
+      "required": ["status", "format", "budget", "timerDuration", "code", "banditorId", "createdAt"]
+    },
+    "Participant": {
+      "title": "Participant",
+      "description": "A participant in the auction session",
+      "type": "object",
+      "properties": {
+        "nickname": {
+          "type": "string",
+          "description": "Team name chosen by the participant"
+        },
+        "budgetResiduo": {
+          "type": "number",
+          "description": "Remaining budget"
+        },
+        "rosterCount": {
+          "type": "object",
+          "description": "Count of players per role"
+        },
+        "rosterLimits": {
+          "type": "object",
+          "description": "Min/max per role configured by the auctioneer"
+        },
+        "isConnected": {
+          "type": "boolean",
+          "description": "Connection status"
+        },
+        "joinedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of joining"
+        }
+      },
+      "required": ["nickname", "budgetResiduo", "rosterCount", "rosterLimits", "isConnected", "joinedAt"]
+    },
+    "Player": {
+      "title": "Player",
+      "description": "A football player from the CSV list",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Original ID from LegheFC CSV"
+        },
+        "r": {
+          "type": "string",
+          "description": "Classic Role"
+        },
+        "rm": {
+          "type": "string",
+          "description": "Mantra Roles (separated by /)"
+        },
+        "nome": {
+          "type": "string",
+          "description": "Player name"
+        },
+        "squadra": {
+          "type": "string",
+          "description": "Serie A team"
+        },
+        "qt": {
+          "type": "number",
+          "description": "Classic initial quotation"
+        },
+        "qm": {
+          "type": "number",
+          "description": "Mantra initial quotation"
+        },
+        "fvm": {
+          "type": "number",
+          "description": "Fanta Market Value"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["available", "auctioning", "sold", "cancelled"],
+          "description": "Current status of the player"
+        },
+        "soldTo": {
+          "type": "string",
+          "description": "UID of the winner (null if available)"
+        },
+        "soldPrice": {
+          "type": "number",
+          "description": "Price paid (null if available)"
+        }
+      },
+      "required": ["id", "r", "rm", "nome", "squadra", "qt", "qm", "fvm", "status"]
+    },
+    "CurrentAuction": {
+      "title": "Current Auction",
+      "description": "The currently active auction",
+      "type": "object",
+      "properties": {
+        "playerId": {
+          "type": "string",
+          "description": "ID of the player currently being auctioned"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["idle", "open", "closing", "revealed", "tiebreak", "cancelled", "sold"],
+          "description": "Status of the current auction"
+        },
+        "timerEnd": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp for auction end"
+        },
+        "bidCount": {
+          "type": "number",
+          "description": "Number of received bids"
+        },
+        "round": {
+          "type": "number",
+          "description": "Tiebreak round (1, 2, 3)"
+        },
+        "tiebreakParticipants": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "UIDs of participants in the tiebreak"
+        },
+        "wasRandom": {
+          "type": "boolean",
+          "description": "True if assigned randomly in R3"
+        }
+      },
+      "required": ["playerId", "status", "bidCount", "round"]
+    },
+    "Bid": {
+      "title": "Bid",
+      "description": "A bid placed by a participant",
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": "number",
+          "description": "Amount bid"
+        },
+        "submittedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the bid"
+        },
+        "round": {
+          "type": "number",
+          "description": "Round of the bid"
+        }
+      },
+      "required": ["amount", "submittedAt", "round"]
+    },
+    "AuctionHistory": {
+      "title": "Auction History",
+      "description": "Record of a completed auction",
+      "type": "object",
+      "properties": {
+        "playerId": {
+          "type": "string",
+          "description": "ID of the player"
+        },
+        "playerNome": {
+          "type": "string",
+          "description": "Name of the player"
+        },
+        "winnerUid": {
+          "type": "string",
+          "description": "UID of the winner"
+        },
+        "winnerNickname": {
+          "type": "string",
+          "description": "Nickname of the winner"
+        },
+        "price": {
+          "type": "number",
+          "description": "Final price paid"
+        },
+        "allBids": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "uid": { "type": "string" },
+              "nickname": { "type": "string" },
+              "amount": { "type": "number" }
+            }
+          },
+          "description": "All bids placed"
+        },
+        "rounds": {
+          "type": "number",
+          "description": "Number of rounds"
+        },
+        "wasRandom": {
+          "type": "boolean",
+          "description": "True if assigned randomly"
+        },
+        "wasCancelled": {
+          "type": "boolean",
+          "description": "True if cancelled"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of completion"
+        }
+      },
+      "required": ["playerId", "playerNome", "completedAt"]
+    },
+    "RosterPlayer": {
+      "title": "Roster Player",
+      "description": "A player assigned to a participant's roster",
+      "type": "object",
+      "properties": {
+        "playerId": {
+          "type": "string",
+          "description": "Original ID from LegheFC CSV"
+        },
+        "nome": {
+          "type": "string",
+          "description": "Name of the player"
+        },
+        "role": {
+          "type": "string",
+          "description": "Role in the roster"
+        },
+        "price": {
+          "type": "number",
+          "description": "Credits paid"
+        },
+        "assignedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of assignment"
+        }
+      },
+      "required": ["playerId", "nome", "role", "price", "assignedAt"]
+    }
+  },
+  "firestore": {
+    "/sessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/Session" },
+      "description": "Auction sessions"
+    },
+    "/sessions/{sessionId}/participants/{participantId}": {
+      "schema": { "$ref": "#/entities/Participant" },
+      "description": "Participants in a session"
+    },
+    "/sessions/{sessionId}/players/{playerId}": {
+      "schema": { "$ref": "#/entities/Player" },
+      "description": "Players available in a session"
+    },
+    "/sessions/{sessionId}/currentAuction/state": {
+      "schema": { "$ref": "#/entities/CurrentAuction" },
+      "description": "The currently active auction for a session"
+    },
+    "/sessions/{sessionId}/currentAuction/state/bids/{bidId}": {
+      "schema": { "$ref": "#/entities/Bid" },
+      "description": "Bids placed in the current auction"
+    },
+    "/sessions/{sessionId}/auctionHistory/{historyId}": {
+      "schema": { "$ref": "#/entities/AuctionHistory" },
+      "description": "History of completed auctions"
+    },
+    "/sessions/{sessionId}/participants/{participantId}/roster/{rosterId}": {
+      "schema": { "$ref": "#/entities/RosterPlayer" },
+      "description": "Players assigned to a participant's roster"
+    }
+  }
+}
