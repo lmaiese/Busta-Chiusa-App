@@ -1,7 +1,7 @@
 ================================================================================
 BUSTA CHIUSA
 App per aste di fantacalcio a offerta silenziosa
-Documento Progettuale Completo — Versione 1.0 — Aprile 2026
+Documento Progettuale Completo — Versione 1.2 — Aprile 2026
 ================================================================================
 
 
@@ -39,6 +39,7 @@ rivelate solo a busta chiusa.
 BANDITORE
   Responsabilità : Crea sessione, carica CSV, avvia/chiude buste, gestisce lista
   Autenticazione : Account Firebase (Google o Apple Sign-In) — persistente
+  Permessi extra : Override manuale assegnazione (squadra + prezzo liberi)
 
 PARTECIPANTE
   Responsabilità : Entra con codice sessione, sceglie nickname, fa offerte
@@ -47,22 +48,28 @@ PARTECIPANTE
 2.2 Meccanica d'asta — flusso per ogni calciatore
 ──────────────────────────────────────────────────
 1. Il banditore scorre il listone (lista verticale scrollabile, filtri per ruolo
-   in cima) e seleziona un calciatore.
+   in cima) e seleziona un calciatore premendo il pulsante play.
 
-2. Si apre la schermata busta con un timer configurabile (default 30 secondi).
-   Il banditore può chiuderla anticipatamente.
+2. La Cloud Function `startAuction` viene invocata: scrive `timerEnd` con
+   timestamp server-side e imposta lo stato `open`. Il timer parte su tutti
+   i dispositivi calcolando il delta da `timerEnd`.
 
 3. Durante la busta: il contatore delle offerte ricevute è visibile a tutti,
-   gli importi sono segreti. I partecipanti inseriscono l'offerta tramite
-   tastiera numerica custom (stile calcolatrice, max 4 cifre). L'offerta è
-   modificabile finché la busta è aperta.
+   gli importi sono segreti (leggibili solo dalla Cloud Function via Admin SDK).
+   I partecipanti inseriscono l'offerta tramite tastiera numerica custom
+   (stile calcolatrice, max 4 cifre). L'offerta è modificabile finché la
+   busta è aperta: ogni modifica sovrascrive bids/{uid}.
 
-4. Alla chiusura: rivelazione simultanea. Tutte le offerte sono mostrate su
-   tutti i dispositivi in ordine decrescente di importo, in modo permanente
-   (il ranking resta visibile fino alla prossima busta).
+4. Alla chiusura (timer naturale o anticipata dal banditore): la Cloud Function
+   `closeAuction` legge tutte le buste via Admin SDK, le valida (budget e slot
+   rosa), determina il vincitore e imposta `status: 'revealed'`.
 
-5. Vince l'offerta più alta. Il calciatore viene assegnato alla rosa del
-   vincitore e i crediti vengono sottratti.
+5. Rivelazione simultanea: tutte le offerte appaiono su tutti i dispositivi
+   in ordine decrescente con nome squadra e importo.
+
+6. Vince l'offerta più alta. La Cloud Function `onAuctionRevealed` (interna
+   a `closeAuction`) aggiorna budget, rosterCount e rosa del vincitore, e
+   appende lo storico.
 
 2.3 Gestione parità
 ───────────────────
@@ -70,6 +77,7 @@ PARTECIPANTE
   2° pareggio  →  Tiebreak R2  →  Altra busta chiusa solo tra i pareggianti
   3° pareggio  →  Sold (random)→  Assegnazione randomica server-side al
                                   prezzo del pareggio + 1 credito
+                                  Flag wasRandom=true nello storico
 
 2.4 Regole offerta
 ──────────────────
@@ -78,39 +86,52 @@ PARTECIPANTE
 • Il sistema blocca l'offerta se la rosa del partecipante è già piena per quel
   ruolo (validazione a doppio livello: client e Cloud Function)
 • Un partecipante non può offrire se il budget residuo è 0
+• Il ruolo usato per il conteggio slot è il ruolo primario (primo nella stringa
+  Rm per Mantra, campo R per Classic)
 
-2.5 Annullamento busta
+2.5 Override manuale banditore
+──────────────────────────────
+Il banditore può assegnare manualmente qualsiasi calciatore a qualsiasi squadra
+con un prezzo libero (anche 0), tramite modal dedicata durante la busta aperta.
+La Cloud Function `manualAssign` gestisce l'operazione e aggiorna budget e rosa.
+Utile per correggere errori o gestire calciatori non presenti nel CSV.
+
+2.6 Annullamento busta
 ───────────────────────
 Il banditore può annullare una busta aperta in qualsiasi momento. Il calciatore
-torna nello stato "disponibile", la busta annullata viene registrata nello
+torna nello stato "available", la busta annullata viene registrata nello
 storico con flag wasCancelled=true. I crediti non vengono scalati a nessun
 partecipante.
 
-2.6 Recupero sessione
+2.7 Recupero sessione
 ─────────────────────
 Se il banditore perde la connessione durante una busta aperta, la sessione
 rimane attiva su Firestore. Al rientro, il banditore deve riavviare manualmente
-il calciatore corrente (la busta interrotta può essere annullata e riaperta).
+il calciatore corrente (la busta interrotta va annullata e riaperta).
 Lo stato di tutti i partecipanti e dei calciatori già assegnati è preservato.
+Il timer si chiude naturalmente (auto-close triggerato dal client del banditore
+al rientro, quando rileva timerEnd già passato).
 
-2.7 Budget e crediti
+2.8 Budget e crediti
 ────────────────────
 • Budget iniziale configurabile dal banditore a inizio sessione
 • Crediti residui di ogni partecipante visibili a tutti in tempo reale
-• I crediti vengono scalati solo dopo la conferma del vincitore (stato Sold)
+• I crediti vengono scalati solo dopo la conferma del vincitore server-side
+• Header fisso per i partecipanti: nome squadra + budget residuo + codice
 
-2.8 Informazioni sempre accessibili ai partecipanti
+2.9 Informazioni sempre accessibili ai partecipanti
 ────────────────────────────────────────────────────
-• Classifica budget residuo in tempo reale (chi ha più crediti)
-• Rose di tutti i partecipanti visibili in tempo reale
-• Storico asta (calciatore → squadra vincitrice → prezzo pagato)
-• Listone completo con filtri per ruolo (calciatori assegnati marcati)
+4 tab sempre visibili durante l'asta:
+  • Busta     — calciatore corrente, timer, tastiera offerta (o "in attesa")
+  • Listone   — lista completa con filtri ruolo e ordinamento
+  • Rose      — rose di tutti i partecipanti in tempo reale con budget
+  • Storico   — lista cronologica buste, espandibile per vedere tutte le offerte
 
-2.9 Notifiche
-─────────────
-Nessuna notifica push. Quando si apre una nuova busta, l'app emette un segnale
-sonoro e una vibrazione in-app su tutti i dispositivi connessi. La
-sincronizzazione avviene tramite Firestore real-time listener.
+2.10 Notifiche
+──────────────
+Nessuna notifica push. Quando si apre una nuova busta, la tab "Busta"
+mostra un pallino rosso pulsante. Suoni/vibrazione da implementare
+(richiede gesto preventivo utente per Web Audio API).
 
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -126,12 +147,12 @@ Quattro ruoli base:
   A  →  Attaccante
 
 Moduli personalizzabili a scelta della lega.
-Composizione rosa: min 1P/6D/6C/4A, max 15P/25D/25C/25A.
-I limiti effettivi per ogni sessione vengono configurati dal banditore.
+Limiti rosa default: P(3/3), D(8/8), C(8/8), A(6/6).
+Configurabili dal banditore a inizio sessione (solo max slot per ora).
 
 3.2 Mantra
 ──────────
-Undici ruoli specifici con corrispondenza al ruolo tattico reale:
+Dodici ruoli specifici con corrispondenza al ruolo tattico reale:
 
   Por  →  Portiere                  (Porta)
   Dc   →  Difensore centrale        (Difesa)
@@ -155,7 +176,11 @@ Undici moduli predefiniti (non modificabili):
   4-3-3 / 4-3-1-2 / 4-4-2 / 4-1-4-1 / 4-4-1-1 / 4-2-3-1
 
 Un calciatore può avere più ruoli Mantra separati da / nel CSV (es. Dd/Ds/E).
-Il parsing di questo campo è critico per la validazione del roster.
+Il ruolo primario (primo nella stringa) è usato per il conteggio slot.
+Tutti i ruoli vengono conservati e mostrati nella rosa (roleRaw).
+Limiti rosa default Mantra:
+  Por(2-3), Dc(4-7), Dd(1-3), Ds(1-3), B(0-3), E(0-3),
+  M(1-4), C(2-5), T(1-4), W(1-4), A(1-3), Pc(2-4).
 
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -164,48 +189,53 @@ Il parsing di questo campo è critico per la validazione del roster.
 
 4.1 Listone (input)
 ───────────────────
-Il banditore carica all'inizio della sessione il listone ufficiale scaricabile
-da Fantacalcio.it. Separatore: punto e virgola (;).
+Il banditore carica il listone ufficiale scaricabile da LegheFantacalcio
+(via FantaAsta Buzz o dall'interfaccia web della lega). Separatore: ;
 
   Colonna   Tipo      Descrizione
   ────────  ────────  ──────────────────────────────────────────────────────────
-  Id        string    ID univoco del calciatore — chiave per l'export rose,
-                      deve essere preservato su Firestore
+  Id        string    ID univoco — chiave per l'export rose, preservato su
+                      Firestore in ogni documento players/{csvId}
   R         string    Ruolo Classic (P / D / C / A)
   Rm        string    Ruolo/i Mantra separati da / (es. Dd/Ds/E)
   Nome      string    Cognome o nome completo del calciatore
   Squadra   string    Squadra di Serie A
   Qt        number    Quotazione iniziale Classic (informativa)
   Qm        number    Quotazione iniziale Mantra (informativa)
-  FVM       number    Fanta Valore di Mercato Classic (utile per ordinamento)
+  FVM       number    Fanta Valore di Mercato (usato per ordinamento default)
 
-⚠ Il campo Id deve essere letto, archiviato su Firestore e incluso nell'export
-  rose. Senza di esso l'importazione su LegheFantacalcio non riesce.
+⚠ Il campo Id è obbligatorio. Senza Id l'export rose non funziona.
+⚠ Il CSV non è a download libero: il banditore deve procurarselo tramite
+  FantaAsta Buzz o dalla propria lega su leghe.fantacalcio.it.
 
 4.2 Export rose (output)
 ────────────────────────
-A fine asta il banditore può esportare un file CSV compatibile con la funzione
-"Importa Rose" di LegheFantacalcio (Admin → Gestione Rose → Importa).
+A fine asta: Admin → Gestione Rose → Esporta rose (CSV).
+Formato compatibile con LegheFantacalcio (una sezione per squadra):
 
-Struttura (una sezione per squadra, una riga per calciatore acquistato):
-
+  # NomeSquadra
   Id;Crediti
   1234;45
   5678;12
 
-Prerequisito per il successo dell'import:
-  • Il budget configurato su LegheFantacalcio = budget usato in Busta Chiusa
-  • La struttura rose (slot per ruolo) deve essere allineata
+  # AltraSquadra
+  Id;Crediti
+  9876;30
+  ...
 
-Export aggiuntivi (nice-to-have):
-  • Excel (.xlsx) — consultazione offline
-  • PNG — condivisione rapida su WhatsApp/Telegram
+Prerequisiti per il successo dell'import su LegheFantacalcio:
+  • Budget configurato su LegheFC = budget usato in Busta Chiusa
+  • Struttura rose (slot per ruolo) allineata
+
+⚠ Da verificare: LegheFC potrebbe non riconoscere il formato con commento
+  "# NomeSquadra". In quel caso l'admin importa un file per squadra.
 
 4.3 Ordinamento e filtri listone
 ─────────────────────────────────
-• Ordinamenti: random, per ruolo, per quotazione (Qt/Qm), per nome
-• I calciatori già assegnati sono marcati come "sold" e non avviabili
-• Filtri per ruolo: Classic (P/D/C/A) o Mantra (tutti i 11 ruoli)
+• Ordinamenti: per valore (FVM, default), per nome, per ruolo, casuale
+• Filtri per ruolo: Classic (P/D/C/A) o Mantra (tutti e 12 i ruoli)
+• I calciatori già assegnati sono marcati "sold" e non avviabili
+• La barra di ricerca filtra per nome e squadra
 
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -215,36 +245,47 @@ Export aggiuntivi (nice-to-have):
 5.1 Stack tecnologico
 ─────────────────────
   Layer               Tecnologia              Motivazione
-  ──────────────────  ──────────────────────  ────────────────────────────────────
-  Frontend mobile     Flutter (Dart)          Unica codebase iOS + Android,
-                                              UI fluida, ottimo supporto Firebase
-  Autenticazione      Firebase Auth           Google/Apple per banditore,
-                                              Anonymous per partecipanti
-  Database real-time  Cloud Firestore         Listener real-time nativi,
-                                              persistenza offline nativa,
+  ──────────────────  ──────────────────────  ────────────────────────────────
+  Frontend            React + TypeScript      (AI Studio template esistente)
+  Styling             Tailwind CSS v4         utility-first, tema dark custom
+  Routing             React Router v7         SPA con route nidificate
+  Autenticazione      Firebase Auth           Google per banditore, Anonymous
+                                              per partecipanti
+  Database real-time  Cloud Firestore         Listener real-time, offline cache,
                                               security rules granulari
-  Logica server       Cloud Functions(Node)   Timer, reveal, validazione offerte —
-                                              logica non manipolabile dal client
-  File storage        Firebase Storage        Upload CSV listone dal banditore
-  Task scheduling     Cloud Tasks             Garantisce chiusura timer anche se
-                                              tutti i client sono offline
+  Logica server       Cloud Functions v2      Logica critica server-side,
+  (Node.js 20)        (onCall HTTPS)          buste segrete, atomicità
+  Build/Dev           Vite 6                  Dev server + HMR
 
-⚠ Il free tier Firebase regge ampiamente leghe piccole:
-  Firestore: 50k letture/giorno e 20k scritture/giorno gratuite.
-  Cloud Functions: 2M invocazioni gratuite/mese.
+5.2 Perché Cloud Functions (e non tutto client-side)
+─────────────────────────────────────────────────────
+• Segretezza buste: le offerte hanno `allow read: if false` in Security Rules.
+  Solo l'Admin SDK (Cloud Functions) le legge. Il banditore client-side non
+  vede mai le offerte prima della chiusura.
+• Atomicità: la chiusura usa una transazione Firestore per prevenire doppia
+  chiusura concorrente.
+• Timer affidabile: `timerEnd` viene scritto server-side con timestamp preciso.
+  Il client calcola il delta, ma la chiusura è triggerata dal client del
+  banditore (non da Cloud Tasks) — coerente con il requisito di recupero
+  manuale dopo disconnessione.
 
-5.2 Accesso alla sessione
+5.3 Piano Firebase e costi
+──────────────────────────
+Richiesto: piano Blaze (pay-as-you-go).
+Costo reale per sessioni di fantacalcio: ~$0 (2M invocazioni Functions/mese
+gratuite, 50k letture Firestore/giorno gratuite).
+Consigliato: impostare budget alert a $1 su Firebase Console.
+
+5.4 Accesso alla sessione
 ─────────────────────────
 Il banditore crea la sessione e ottiene un codice di 6 caratteri uppercase
-(es. AX47KZ). I partecipanti inseriscono il codice all'avvio dell'app, scelgono
-un nickname per la propria squadra e vengono registrati come Anonymous Auth.
-Nessuna email o password richiesta.
+(es. AX47KZ). I partecipanti inseriscono il codice all'avvio, scelgono
+un nickname e vengono registrati come Anonymous Auth. Nessuna email/password.
 
-5.3 Sessioni parallele
+5.5 Sessioni parallele
 ──────────────────────
-L'architettura supporta più sessioni d'asta in contemporanea (leghe diverse).
-Ogni sessione è un documento Firestore indipendente con il proprio albero di
-subcollection. Nessun limite architetturale al numero di sessioni parallele.
+Architettura supporta sessioni parallele illimitate (leghe diverse). Ogni
+sessione è un documento Firestore con il proprio albero di subcollection.
 
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -253,322 +294,366 @@ subcollection. Nessun limite architetturale al numero di sessioni parallele.
 
 6.1  sessions/{sessionId}
 ─────────────────────────
-  Campo           Tipo        Descrizione
-  ──────────────  ──────────  ──────────────────────────────────────────────────
-  status          string      'lobby'|'open'|'closing'|'revealed'|
-                              'tiebreak'|'completed'
+  status          string      'lobby'|'auctioning'|'completed'
   format          string      'classic' | 'mantra'
   budget          number      Crediti iniziali per partecipante
-  timerDuration   number      Secondi per ogni busta
+  timerDuration   number      Secondi per ogni busta (default 30)
   code            string      Codice accesso 6 caratteri uppercase
   banditorId      string      Firebase UID del banditore
+  rosterLimits    map         {ruolo: {min, max}} configurato dal banditore
   createdAt       timestamp   Server timestamp di creazione
 
 6.2  …/participants/{uid}
 ─────────────────────────
-  Campo           Tipo        Descrizione
-  ──────────────  ──────────  ──────────────────────────────────────────────────
   nickname        string      Nome squadra scelto dal partecipante
-  budgetResiduo   number      Crediti rimanenti, aggiornato dopo ogni
-                              assegnazione
-  rosterCount     map         Conteggio calciatori per ruolo
-                              es. {P:2, D:5, C:7, A:3}
-  rosterLimits    map         Min/max per ruolo configurati dal banditore
-                              copiati al momento dell'ingresso
-  isConnected     boolean     Stato connessione (heartbeat)
+  budgetResiduo   number      Crediti rimanenti (scalati dopo ogni sold)
+  rosterCount     map         {ruolo: count} — es. {P:2, D:5, C:7, A:3}
+                              Per Mantra: tutti e 12 i ruoli inizializzati a 0
+  rosterLimits    map         Copia dei limiti della sessione (per validazione CF)
+  isConnected     boolean     Stato connessione (heartbeat non implementato)
   joinedAt        timestamp   Timestamp di ingresso
 
-6.3  …/players/{csvId}
+6.3  …/participants/{uid}/roster/{csvId}
+────────────────────────────────────────
+Scritta dalla Cloud Function dopo ogni assegnazione.
+  playerId        string      = csvId = Id del listone (per l'export)
+  nome            string      Nome del calciatore
+  squadra         string      Squadra di Serie A
+  role            string      Ruolo primario usato (per slot)
+  roleRaw         string      Ruolo/i completo dal CSV (es. "Dd/Ds/E")
+  price           number      Crediti pagati all'asta
+  assignedAt      timestamp   Timestamp assegnazione
+
+6.4  …/players/{csvId}
 ──────────────────────
-  Campo               Tipo        Descrizione
-  ──────────────────  ──────────  ──────────────────────────────────────────────
-  id                  string      Id originale listone LegheFC — chiave export
-  r / rm              string      Ruolo Classic / Ruoli Mantra (campo multiplo)
-  nome / squadra      string      Dati anagrafici dal CSV
-  qt / qm / fvm       number      Quotazioni informative
-  status              string      'available'|'auctioning'|'sold'|'cancelled'
-  soldTo / soldPrice  string/num  UID vincitore e prezzo (null se disponibile)
+  id              string      Id originale listone LegheFC — chiave export
+  r               string      Ruolo Classic
+  rm              string      Ruolo/i Mantra (separati da /)
+  nome / squadra  string      Dati anagrafici
+  qt / qm / fvm   number      Quotazioni informative
+  status          string      'available'|'auctioning'|'sold'|'cancelled'
+  soldTo          string|null UID vincitore
+  soldPrice       number|null Prezzo pagato
 
-6.4  …/currentAuction  (documento singolo, sovrascritto a ogni busta)
-──────────────────────────────────────────────────────────────────────
-  Campo                   Tipo        Descrizione
-  ──────────────────────  ──────────  ──────────────────────────────────────────
-  playerId                string      csvId del calciatore in asta
-  status                  string      'open'|'closing'|'revealed'|
-                                      'tiebreak'|'cancelled'
-  timerEnd                timestamp   Server timestamp fine busta —
-                                      fonte di verità per il countdown client
-  bidCount                number      N. offerte ricevute, visibile a tutti
-  round                   number      1 | 2 | 3 (gestione tiebreak)
-  tiebreakParticipants    string[]    UID pareggianti (per busta successiva)
-  wasRandom               boolean     True se assegnazione R3 randomica
+⚠ players è scrivibile solo dal banditore (create) e dalla Cloud Function
+  (update status, soldTo, soldPrice). Il client non può aggiornare lo status.
 
-6.5  …/currentAuction/bids/{uid}  (NON leggibile dai client)
-─────────────────────────────────────────────────────────────
-  Campo         Tipo        Descrizione
-  ────────────  ──────────  ──────────────────────────────────────────────────
-  amount        number      Importo offerto (≥1, ≤budgetResiduo)
-  submittedAt   timestamp   Timestamp ultima modifica (sovrascritto)
-  round         number      Round di riferimento
+6.5  …/currentAuction/state  (documento singolo)
+──────────────────────────────────────────────────
+  status          string      'idle'|'open'|'closing'|'revealed'|'tiebreak'|
+                              'cancelled'
+  playerId        string      csvId del calciatore in asta
+  timerEnd        timestamp   Server timestamp fine busta (scritto dalla CF)
+  bidCount        number      N. offerte ricevute — aggiornato client-side
+                              con increment(1) [race condition non critica]
+  round           number      1 | 2 | 3 (gestione tiebreak)
+  tiebreakParticipants string[] UID pareggianti (null se non tiebreak)
+  allBids         array       [{uid, nickname, amount}] — visibile dopo reveal
+  winnerId        string|null UID vincitore (null fino alla reveal)
+  winnerNickname  string|null Nickname vincitore
+  price           number|null Prezzo finale
+  wasRandom       boolean     True se assegnazione R3 randomica
 
-6.6  …/auctionHistory/{autoId}  (append-only, mai modificato)
-──────────────────────────────────────────────────────────────
-  Campo                           Tipo        Descrizione
-  ──────────────────────────────  ──────────  ──────────────────────────────────
-  playerId / playerNome           string      ID e nome calciatore
-  winnerUid / winnerNickname      string|null UID e nickname vincitore
-  price                           number|null Prezzo finale pagato
-  allBids                         array       [{uid, nickname, amount}]
-  rounds / wasRandom / wasCancelled  mixed    Audit del risultato
-  completedAt                     timestamp   Timestamp di chiusura
+6.6  …/currentAuction/state/bids/{uid}
+───────────────────────────────────────
+  allow read: if false  ←  COMPLETAMENTE SEGRETO AI CLIENT
+  Solo Admin SDK (Cloud Function) può leggere.
 
-6.7  …/roster/{uid}/{csvId}
-────────────────────────────
-  Campo         Tipo        Descrizione
-  ────────────  ──────────  ──────────────────────────────────────────────────
-  playerId      string      = csvId = Id del listone (per l'export)
-  nome          string      Nome del calciatore
-  role          string      Ruolo in rosa
-  price         number      Crediti pagati all'asta
-  assignedAt    timestamp   Timestamp assegnazione
+  amount          number      Importo offerto (≥1, ≤budgetResiduo)
+  submittedAt     timestamp   Timestamp ultima modifica
+  round           number      Round di riferimento
+
+6.7  …/auctionHistory/{autoId}  (append-only)
+──────────────────────────────────────────────
+  playerId / playerNome           ID e nome calciatore
+  winnerUid / winnerNickname      UID e nickname vincitore (null se annullato)
+  price                           Prezzo finale (null se annullato)
+  allBids                         [{uid, nickname, amount}] — tutte le offerte
+  rounds                          N. round giocati
+  wasRandom / wasCancelled        Audit del risultato
+  completedAt                     Timestamp di chiusura
 
 
 ────────────────────────────────────────────────────────────────────────────────
-7. CLOUD FUNCTIONS
+7. CLOUD FUNCTIONS (v2, onCall HTTPS)
 ────────────────────────────────────────────────────────────────────────────────
 
-7.1  onAuctionOpen
-   Trigger  : Write su currentAuction.status = 'open'
-   Logica   :
-   • Calcola timerEnd = serverTimestamp + timerDuration
-   • Schedula closeAuction via Cloud Tasks al momento timerEnd
-   • Il Cloud Task garantisce la chiusura anche se tutti i client sono offline
+Tutte le Functions verificano:
+  1. Autenticazione (request.auth presente)
+  2. Ruolo banditore (sessionData.banditorId === uid)
+
+7.1  startAuction
+─────────────────
+Input: { sessionId, playerId, round?, tiebreakParticipants? }
+  • Elimina tutte le bids del round precedente (batch delete)
+  • Aggiorna player status a 'auctioning'
+  • Scrive currentAuction/state con status 'open' e timerEnd server-side
+Output: { timerEnd: ms, round }
 
 7.2  closeAuction
-   Trigger  : Cloud Tasks (timer) OPPURE HTTP callable dal banditore
-   Logica   :
-   • Legge tutti i documenti bids/ tramite Admin SDK
-   • Valida ogni offerta:
-       - amount ≥ 1
-       - budgetResiduo >= amount
-       - rosterCount[role] < rosterLimits[role].max
-   • Bid invalide scartate silenziosamente
-   • Determina il vincitore. In caso di parità:
-       - R1/R2 → stato tiebreak, popola tiebreakParticipants
-       - R3    → assegnazione randomica server-side, wasRandom=true
-   • Imposta status: 'closing' → 'revealed'
+─────────────────
+Input: { sessionId }
+  • Transazione atomica: cambia status da 'open' a 'closing' (previene doppia
+    chiusura)
+  • Legge tutte le bids via Admin SDK
+  • Filtra per tiebreakParticipants se round > 1
+  • Valida ogni bid: amount ≥ 1, budgetResiduo ≥ amount, slot non pieno
+  • Ordina per amount decrescente, determina vincitore/i
+  • Parità R1/R2: stato 'tiebreak' + popola tiebreakParticipants
+  • Parità R3: sorteggio server-side, prezzo = maxAmount + 1, wasRandom=true
+  • Vincitore unico: chiama processAssignment interno
+Output: { result, winner?, price?, tiebreakNicknames? }
 
-7.3  onAuctionRevealed
-   Trigger  : Write su currentAuction.status = 'revealed'
-   Logica   :
-   • Sottrae soldPrice da budgetResiduo del vincitore
-   • Incrementa rosterCount[role] del vincitore
-   • Aggiunge calciatore a roster/{uid}/{csvId}
-   • Imposta players/{id}.status = 'sold'
-   • Appende voce a auctionHistory con allBids completo
+  processAssignment (interno):
+    • Aggiorna budgetResiduo vincitore
+    • Aggiorna rosterCount vincitore (ruolo primario)
+    • Scrive roster/{uid}/{csvId}
+    • Imposta player status 'sold', soldTo, soldPrice
+    • Appende auctionHistory con allBids completo
+    • Imposta currentAuction/state status 'revealed' con allBids e winnerId
 
-7.4  onAuctionCancelled
-   Trigger  : HTTP callable dal banditore
-   Logica   :
-   • Ripristina players/{id}.status = 'available'
-   • Appende voce a auctionHistory con wasCancelled=true
-   • Pulisce currentAuction
-   • Non modifica budget né roster di nessun partecipante
+7.3  cancelAuction
+──────────────────
+Input: { sessionId }
+  • Ripristina player status 'available'
+  • Appende auctionHistory con wasCancelled=true
+  • Resetta currentAuction/state a 'idle'
+Output: { result: 'cancelled' }
 
-7.5  Security Rules (schema)
-──────────────────────────────
-  // bids: scrivibile solo dal proprietario, mai leggibile dai client
-  match /sessions/{sid}/currentAuction/bids/{uid} {
-    allow create, update: if request.auth.uid == uid
-      && isAuctionOpen(sid)
-      && request.resource.data.amount >= 1;
-    allow read: if false;  // solo Admin SDK
-  }
-
-  // participants: lettura pubblica nella sessione, scrittura solo propria
-  match /sessions/{sid}/participants/{uid} {
-    allow read: if isParticipant(sid);
-    allow write: if request.auth.uid == uid;
-  }
+7.4  manualAssign
+─────────────────
+Input: { sessionId, playerId, participantId, price }
+  • Valida: price ≥ 0, price ≤ budgetResiduo
+  • Chiama processAssignment con i parametri forniti
+  • Non richiede busta aperta (può essere usata anche fuori asta)
+Output: { result: 'assigned', winner, price }
 
 
 ────────────────────────────────────────────────────────────────────────────────
-8. MACCHINA A STATI — currentAuction.status
+8. SECURITY RULES (schema)
 ────────────────────────────────────────────────────────────────────────────────
 
-  Stato       Trigger di ingresso                Cosa succede
-  ──────────  ────────────────────────────────── ─────────────────────────────────
-  idle        Sessione creata / busta chiusa     Banditore seleziona calciatore
-  open        Banditore avvia la busta           Timer parte, offerte aperte
-  closing     Timer scade o banditore chiude     Cloud Function valida le buste
-  revealed    Closing completato                 Tutte le offerte visibili
-  tiebreak    Parità rilevata in closing         Nuova busta solo pareggianti
-  cancelled   Banditore annulla                  Calciatore torna disponibile
-  sold        Revealed o R3 random               Rosa e budget aggiornati
+  sessions/{sid}
+    read: isAuth()                   — chiunque autenticato (per join via codice)
+    create: isAuth() && banditorId == uid
+    update/delete: isBanditore(sid)
+
+  …/participants/{uid}
+    read: isSessionMember(sid)       — banditore o partecipante registrato
+    create: isAuth() && uid == request.auth.uid
+    update: uid == request.auth.uid || isBanditore(sid)
+    delete: isBanditore(sid)
+
+  …/participants/{uid}/roster/{playerId}
+    read: isSessionMember(sid)
+    write: if false                  — solo Cloud Function (Admin SDK)
+
+  …/players/{playerId}
+    read: isAuth()
+    create: isBanditore(sid)         — upload CSV
+    update/delete: if false          — solo Cloud Function
+
+  …/currentAuction/state
+    read: isAuth()
+    create: isBanditore(sid)
+    update: isBanditore(sid) || (isAuth() && solo campo bidCount += 1)
+    delete: if false
+
+  …/currentAuction/state/bids/{uid}
+    read: if false                   ← SEGRETO ASSOLUTO
+    create/update: isAuth() && uid == request.auth.uid
+                   && amount is int && amount >= 1
+    delete: if false
+
+  …/auctionHistory/{histId}
+    read: isSessionMember(sid)
+    write: if false                  — solo Cloud Function
+
+
+────────────────────────────────────────────────────────────────────────────────
+9. MACCHINA A STATI — currentAuction/state.status
+────────────────────────────────────────────────────────────────────────────────
+
+  Stato       Trigger                           Cosa succede
+  ──────────  ────────────────────────────────  ────────────────────────────────
+  idle        Sessione creata / busta chiusa    Banditore seleziona calciatore
+  open        Cloud Function startAuction       Timer parte, offerte aperte
+  closing     Cloud Function closeAuction       Transazione, lettura bids
+  revealed    Closing completato (vincitore)    allBids visibili, winnerId set
+  tiebreak    Closing (parità R1/R2)            Nuova busta per pareggianti
+  cancelled   cancelAuction o nessuna bid       Calciatore torna disponibile
 
   Transizioni complete:
-    idle → open            (banditore avvia)
-    open → closing         (timer / chiude)
-    open → cancelled       (banditore annulla)
-    closing → revealed     (vincitore unico)
-    closing → tiebreak     (parità R1 o R2)
-    tiebreak → open        (nuova busta pareggianti)
-    tiebreak → sold        (R3 → random, ────────)
-    revealed → sold        (assegnazione)
-    cancelled → idle       (calciatore libero)
+    idle      → open         (startAuction CF)
+    open      → closing      (closeAuction CF: timer o banditore)
+    open      → cancelled    (cancelAuction CF)
+    closing   → revealed     (vincitore unico)
+    closing   → tiebreak     (parità R1 o R2)
+    tiebreak  → open         (startAuction CF con round+1)
+    tiebreak  → revealed     (parità R3: random)
+    revealed  → idle         (banditore preme "Prossimo calciatore")
+    cancelled → idle         (reset stato)
 
 
 ────────────────────────────────────────────────────────────────────────────────
-9. FLUSSO DI NAVIGAZIONE
+10. FLUSSO DI NAVIGAZIONE
 ────────────────────────────────────────────────────────────────────────────────
 
-9.1  Flusso banditore
+10.1  Flusso banditore
 ──────────────────────
   #   Schermata           Contenuto e azioni chiave
   ──  ──────────────────  ──────────────────────────────────────────────────────
-  1   Home / Login        Login Google o Apple. Storico sessioni precedenti.
-  2   Crea sessione       Formato (Classic/Mantra), budget, timer, slot rosa.
-  3   Upload listone      Import CSV da file locale. Preview calciatori caricati.
-  4   Lobby               Codice sessione in grande. Lista partecipanti connessi.
-                          Pulsante "Inizia asta" (attivo con ≥2 partecipanti).
-  5   Lista calciatori    Lista verticale scrollabile, filtri ruolo in cima.
-                          Barra ricerca per nome. Ordinamento (random/ruolo/qt).
-                          Card calciatore: nome, squadra, ruolo, quotazione.
-                          Tap → Schermata busta.
-  6   Schermata busta     Card calciatore. Countdown (rosso + vibrazione ultimi
-                          5s). Contatore offerte live. Pulsante "Chiudi busta"
-                          anticipato. Pulsante "Annulla".
-                          Chiusura → Schermata reveal.
-  7   Reveal              Ranking completo offerte ordinate per importo
-                          decrescente con nickname. Badge vincitore. Info
-                          tiebreak se parità. Pulsante "Prossimo calciatore".
-  8   Riepilogo finale    Storico completo asta. Budget finale partecipanti.
-                          Rose complete. Export CSV + opzionale XLSX e PNG.
+  1   Home / Login        Login Google. Storico sessioni (da implementare).
+  2   Crea sessione       Formato (Classic/Mantra), budget, timer.
+                          Configurazione slot rosa (espandibile, con default).
+                          Upload CSV listone con preview.
+  3   Lobby               Codice sessione prominente (tap per copiare).
+                          Lista partecipanti connessi con budget. Info sessione.
+                          Pulsante "Inizia asta" (attivo con ≥1 partecipante).
+  4   Asta — Listone      Lista verticale scrollabile, filtri ruolo in cima.
+                          Ricerca per nome/squadra. Ordinamento multi-modalità.
+                          Tap play → invoca startAuction Cloud Function.
+                          Banner warning se busta già aperta.
+  5   Asta — Busta        Overlay full-screen quando busta attiva.
+  (overlay)               Card calciatore, countdown server-accurate (rosso +
+                          pulse ultimi 5s). Contatore offerte live. Pulsante
+                          "Chiudi anticipatamente". Pulsante "Annulla" (X).
+                          Icona override manuale (triangolo warning).
+  6   Reveal              Ranking offerte decrescente con nickname. Badge WIN.
+                          Badge R{n} se spareggio. Badge sorteggio se R3.
+                          Pulsante "Prossimo calciatore" per tornare al listone.
+  7   Asta — Rose         Rose di tutti con budget, slot per ruolo, dettaglio
+                          calciatori. Export CSV in cima.
+  8   Asta — Storico      Lista cronologica buste. Click per vedere le offerte.
+  9   Riepilogo finale    Da implementare. Export CSV prominente.
 
-9.2  Flusso partecipante
+10.2  Flusso partecipante
 ─────────────────────────
   #   Schermata           Contenuto e azioni chiave
   ──  ──────────────────  ──────────────────────────────────────────────────────
-  1   Home                Campo codice sessione (6 caratteri). Nickname squadra.
-  2   Lobby               Attesa avvio asta. Lista partecipanti. Budget visibile.
-  3   Asta — tab Busta    Card calciatore in asta. Timer countdown (rosso +
-                          vibrazione ultimi 5s). Tastiera numerica custom.
-                          Display offerta. Badge numero offerte ricevute.
-                          Offerta modificabile finché la busta è aperta.
-  3   Asta — tab Listone  Lista completa con filtri ruolo. Sold marcati.
-                          Read-only.
-  3   Asta — tab Rose     Rose di tutti i partecipanti in tempo reale con
-                          budget residuo per ciascuno.
-  3   Asta — tab Storico  Lista cronologica: calciatore → squadra → prezzo.
-                          Aggiornata live.
-  4   Reveal              Identica al banditore. Sincronizzata via Firestore.
-                          Segnale sonoro + vibrazione all'apertura.
-  5   Riepilogo finale    Rosa propria e altrui. Storico asta. Budget finale.
+  1   Home                Campo codice (6 char, uppercase). Campo nickname.
+  2   Lobby               Info propria squadra + budget. Lista partecipanti.
+                          Attesa avvio asta.
+  3   Asta                Header fisso: nome squadra + budget residuo + codice.
+  Tab Busta               Busta attiva → ActiveAuction (tastiera, countdown).
+                          Idle → placeholder "in attesa". Pallino rosso pulsante
+                          sulla tab quando busta aperta.
+  Tab Listone             Lista read-only, stessi filtri del banditore.
+  Tab Rose                Rose di tutti in tempo reale con slot per ruolo.
+  Tab Storico             Storico buste espandibile per vedere le offerte.
+  4   Reveal              Identica al banditore. Auto-switch alla tab Busta.
 
 
 ────────────────────────────────────────────────────────────────────────────────
-10. DESIGN SYSTEM E UX
+11. DESIGN SYSTEM — "ELECTRIC NOIR"
 ────────────────────────────────────────────────────────────────────────────────
 
-10.1  Tema visivo — "Electric Noir"
-────────────────────────────────────
-  Dark mode di default.
+  Sfondo principale   #05050f   (quasi nero)
+  Superficie          #0b0b1c
+  Superficie elevata  #111128
+  Accento cyan        #00e5ff   (primario: interattivi, timer, budget)
+  Accento amber       #ffaa00   (ruoli attacco, badge tiebreak, warning)
+  Rosso critico       #ff3d71   (timer scadenza, errori, annulla, sold)
+  Verde               green-400  (connessione, bid inviata)
+  Testo primario      #e8e8ff
+  Testo secondario    #5a5a90
 
-  Palette:
-    Sfondo principale   #05050f   (quasi nero)
-    Superficie          #0b0b1c
-    Superficie elevata  #111128
-    Accento cyan        #00e5ff   (primario, interattivi, glow)
-    Accento amber       #ffaa00   (ruoli calciatori)
-    Rosso critico       #ff3d71   (timer in scadenza, errori)
-    Testo primario      #e8e8ff
-    Testo secondario    #5a5a90
+  Font interfaccia  : System font nativo (SF Pro iOS, Roboto Android)
+  Font numerico     : Monospace (Space Mono) — timer, crediti, offerte
+  Dimensioni        : body 16sp, label 12sp, display numerico 42-72sp
 
-10.2  Tipografia
-─────────────────
-  Font interfaccia  :  System font nativo (SF Pro su iOS, Roboto su Android)
-  Font numerico     :  Monospace (Space Mono o equivalente) per timer, crediti,
-                       offerte — leggibilità immediata dei numeri
-  Dimensioni        :  body 16sp, etichette 12sp, display numerico 42sp+
+  Timer             : MM:SS monospace, cyan → rosso + animate-pulse (ultimi 5s)
+  Fonte di verità   : timerEnd su Firestore (serverTimestamp dalla CF)
+                      Il client calcola il delta — nessun drift tra dispositivi
 
-10.3  Timer
-───────────
-  • Countdown MM:SS, font monospace
-  • Colore cyan di default → rosso (#ff3d71) con pulse negli ultimi 5 secondi
-  • Segnale sonoro + vibrazione al cambio stato 'open' e al reveal
-  • Fonte di verità: timerEnd su Firestore (server timestamp)
-    Il client calcola il delta per evitare derive di orologio tra dispositivi
-
-10.4  Input offerta
-────────────────────
-  • Tastiera numerica custom 3×4 (0–9 + Canc + C)
-  • Display grande in tempo reale sopra la tastiera
-  • Limite: max 4 cifre (9.999 crediti)
-  • Validazione inline: display rosso se amount > budgetResiduo
-  • Avviso visivo se il ruolo del calciatore è già pieno in rosa
-  • Pulsante "Invia offerta":
-      - Cyan attivo + glow se offerta valida
-      - Grigio se importo non valido o ruolo pieno
-      - "Busta chiusa" se timer scaduto
-  • Ogni modifica sovrascrive bids/{uid} in Firestore (l'ultima vale)
+  Tastiera input    : 3x4 grid (1-9, C, 0, ⌫), max 4 cifre
+  Pulsante offerta  : cyan + glow quando valida, grigio se non valida
+  Badge slot pieno  : warning amber "Slot {ruolo} pieno"
 
 
 ────────────────────────────────────────────────────────────────────────────────
-11. DECISIONI APERTE E NOTE FUTURE
+12. DECISIONI APERTE E NOTE FUTURE
 ────────────────────────────────────────────────────────────────────────────────
 
-11.1  Monetizzazione
-Da definire. Struttura suggerita per il futuro: freemium con limite a 8
-partecipanti gratuiti, premium senza limiti e con funzionalità avanzate
-(storico multi-stagione, statistiche asta, export avanzato). La struttura
-Firebase è compatibile con entrambi i modelli.
+12.1  Monetizzazione
+Da definire. Struttura suggerita: freemium (≤8 partecipanti gratis),
+premium senza limiti. La struttura Firebase è compatibile con entrambi.
 
-11.2  Nome dell'app
-Non ancora definito. Si suggerisce di orientarsi su concetti legati alla
-meccanica: busta, buio, blind, segreto, reveal, silenzio, asta cieca.
-Il nome dovrà essere disponibile su App Store e Play Store.
+12.2  Nome dell'app
+Non ancora definito. Concetti: busta, blind, reveal, silenzio, asta cieca.
 
-11.3  Internazionalizzazione
-Solo italiano per il lancio. Flutter supporta i18n nativo — la
-internazionalizzazione è un upgrade futuro senza impatto strutturale.
+12.3  Internazionalizzazione
+Solo italiano per il lancio. Flutter (futura versione) supporta i18n nativo.
 
-11.4  Vista pubblica / proiezione
-Non prevista nella versione 1.0. Tutti i partecipanti seguono l'asta dal
-proprio dispositivo. Upgrade futuro: "TV mode" ottimizzata per schermo esterno.
+12.4  Heartbeat connessione partecipanti
+isConnected viene scritto a true al join ma non aggiornato. Da implementare
+con Firebase Realtime Database onDisconnect() o heartbeat scheduled.
 
-11.5  Asta di riparazione
-Non inclusa nella versione 1.0. La struttura dati è già predisposta: il
-banditore può importare una sessione con rose parziali e continuare da lì.
+12.5  bidCount server-side
+Attualmente increment(1) client-side — race condition non critica.
+Da spostare in Cloud Function trigger su scrittura bids/{uid}.
+
+12.6  Schermata riepilogo finale
+Da implementare: AuctionSummary.tsx + route /session/:id/summary.
+Accessibile al termine di tutta la sessione.
+
+12.7  Export CSV — formato da verificare
+Testare l'import del formato attuale su una lega reale LegheFantacalcio.
+Se i commenti "# NomeSquadra" non sono supportati, esportare un file
+per squadra oppure rimuovere i commenti.
+
+12.8  Notifiche sonore
+Web Audio API richiede gesto preventivo utente. Implementare un bottone
+"Attiva suoni" nella lobby prima dell'inizio asta.
+
+12.9  Asta di riparazione
+Non inclusa in MVP. Struttura dati già predisposta.
+UI da implementare in V1.1.
 
 
 ────────────────────────────────────────────────────────────────────────────────
-12. CHECKLIST FUNZIONALITÀ MVP
+13. CHECKLIST FUNZIONALITÀ
 ────────────────────────────────────────────────────────────────────────────────
 
-  #   Funzionalità                                        Priorità  Note
-  ──  ──────────────────────────────────────────────────  ────────  ──────────────
-  1   Login banditore (Google/Apple)                      MVP
-  2   Accesso partecipante con codice sessione + nickname  MVP
-  3   Import CSV listone LegheFantacalcio                 MVP
-  4   Configurazione sessione (formato/budget/timer/rosa) MVP
-  5   Lista calciatori con filtri e ordinamento           MVP
-  6   Busta chiusa con timer server-side (Cloud Tasks)    MVP       Core feature
-  7   Tastiera numerica custom                            MVP
-  8   Reveal simultaneo su tutti i dispositivi            MVP       Core feature
-  9   Gestione tiebreak (R1, R2, R3 random)              MVP
-  10  Validazione roster per ruolo (client + server)      MVP
-  11  Annullamento busta con ripristino calciatore        MVP
-  12  Budget residuo visibile a tutti in tempo reale      MVP
-  13  Rose / storico / listone (4 tab partecipante)      MVP
-  14  Export rose CSV compatibile LegheFantacalcio        MVP
-  15  Persistenza offline (Firestore offline cache)       MVP
-  16  Tema dark "Electric Noir"                           MVP
-  17  Export XLSX e PNG rose                              V1.1      Nice to have
-  18  Storico sessioni per banditore                      V1.1
-  19  Monetizzazione / freemium                           V2.0      Da definire
-  20  TV mode / proiezione schermo esterno                V2.0
+  #   Funzionalità                                        Stato     Note
+  ──  ──────────────────────────────────────────────────  ────────  ────────────
+  1   Login banditore (Google)                            ✅ Done
+  2   Accesso partecipante con codice + nickname           ✅ Done
+  3   Import CSV listone LegheFantacalcio                 ✅ Done
+  4   Configurazione sessione (formato/budget/timer/rosa) ✅ Done
+  5   Lista calciatori con filtri e ordinamento           ✅ Done
+  6   Cloud Function startAuction (timer server-side)     ✅ Done
+  7   Cloud Function closeAuction (buste segrete)         ✅ Done
+  8   Cloud Function cancelAuction                        ✅ Done
+  9   Cloud Function manualAssign (override banditore)    ✅ Done
+  10  Security Rules — bids allow read: if false          ✅ Done
+  11  Tastiera numerica custom                            ✅ Done
+  12  Reveal simultaneo con ranking offerte               ✅ Done
+  13  Gestione tiebreak R1/R2/R3 random                  ✅ Done
+  14  Validazione roster server-side (budget + slot)      ✅ Done
+  15  Annullamento busta con ripristino calciatore        ✅ Done
+  16  Budget residuo visibile a tutti in tempo reale      ✅ Done
+  17  Header fisso partecipante (squadra+budget+codice)   ✅ Done
+  18  4 tab partecipante (Busta/Listone/Rose/Storico)     ✅ Done
+  19  Storico asta espandibile (click per offerte)        ✅ Done
+  20  Supporto Mantra completo (12 ruoli, multi-ruolo)    ✅ Done
+  21  Export rose CSV compatibile LegheFantacalcio        ✅ Done   Da testare
+  22  Persistenza offline (Firestore offline cache)       ✅ Auto   (Firestore)
+  23  Tema dark "Electric Noir"                           ✅ Done
+  24  Fix bug auth import SessionRouter/Lobby             ✅ Done
+  25  Fix bug import query/where/orderBy ActiveAuction    ✅ Done
+  26  Home.tsx — miglioramenti UX + fix retry anonimo     ⬜ TODO
+  27  Schermata riepilogo finale                          ⬜ TODO   V1.0
+  28  Notifiche sonore/vibrazione                         ⬜ TODO   V1.0
+  29  Heartbeat connessione partecipanti                  ⬜ TODO   V1.1
+  30  bidCount server-side                                ⬜ TODO   V1.1
+  31  Storico sessioni banditore                          ⬜ TODO   V1.1
+  32  Export CSV formato verificato su LegheFC            ⬜ TODO   Test
+  33  Monetizzazione / freemium                           ⬜ TODO   V2.0
+  34  TV mode / proiezione schermo esterno                ⬜ TODO   V2.0
+  35  Asta di riparazione                                 ⬜ TODO   V2.0
 
 
 ================================================================================
-Busta Chiusa — Documento Progettuale v1.0 — Aprile 2026
+Busta Chiusa — Documento Progettuale v1.2 — Aprile 2026
 ================================================================================

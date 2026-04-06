@@ -2,82 +2,93 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ===============================================================
-    // Helper Functions
-    // ===============================================================
-    function isAuthenticated() {
+    // ── Helpers ────────────────────────────────────────────────────────────
+    function isAuth() {
       return request.auth != null;
     }
 
-    function isBanditore(sessionId) {
-      return isAuthenticated() && get(/databases/$(database)/documents/sessions/$(sessionId)).data.banditorId == request.auth.uid;
+    function isBanditore(sid) {
+      return isAuth() &&
+        get(/databases/$(database)/documents/sessions/$(sid)).data.banditorId == request.auth.uid;
     }
 
-    function isParticipant(sessionId, uid) {
-      return isAuthenticated() && exists(/databases/$(database)/documents/sessions/$(sessionId)/participants/$(uid));
+    function isParticipant(sid) {
+      return isAuth() &&
+        exists(/databases/$(database)/documents/sessions/$(sid)/participants/$(request.auth.uid));
     }
 
-    function isAuctionOpen(sessionId) {
-      return get(/databases/$(database)/documents/sessions/$(sessionId)/currentAuction/state).data.status == 'open';
+    function isSessionMember(sid) {
+      return isBanditore(sid) || isParticipant(sid);
     }
 
-    // ===============================================================
-    // Rules
-    // ===============================================================
+    // ── Sessions ───────────────────────────────────────────────────────────
+    match /sessions/{sid} {
+      // Any authenticated user can read session (needed to join via code)
+      allow read: if isAuth();
+      // Only the creator can create (and must set themselves as banditorId)
+      allow create: if isAuth() && request.resource.data.banditorId == request.auth.uid;
+      // Only banditore can update/delete session metadata
+      allow update, delete: if isBanditore(sid);
 
-    match /sessions/{sessionId} {
-      // Anyone authenticated can read the session (needed to join via code)
-      allow read: if isAuthenticated();
-      // Only the creator can create, and only the banditore can update
-      allow create: if isAuthenticated() && request.resource.data.banditorId == request.auth.uid;
-      allow update: if isBanditore(sessionId);
-      allow delete: if isBanditore(sessionId);
-
+      // ── Participants ─────────────────────────────────────────────────────
       match /participants/{uid} {
-        // Anyone in the session can read participants
-        allow read: if isAuthenticated();
-        // A participant can create/update their own record. Banditore can also update (e.g., to deduct budget).
-        allow create: if isAuthenticated() && request.auth.uid == uid;
-        allow update: if isAuthenticated() && (request.auth.uid == uid || isBanditore(sessionId));
-        allow delete: if isBanditore(sessionId);
+        allow read: if isSessionMember(sid);
+        // Participants register themselves on join
+        allow create: if isAuth() && request.auth.uid == uid;
+        // Participant updates own record (e.g. isConnected); banditore can update any
+        allow update: if isAuth() && (request.auth.uid == uid || isBanditore(sid));
+        allow delete: if isBanditore(sid);
 
-        match /roster/{rosterId} {
-          allow read: if isAuthenticated();
-          // Only banditore can assign players to a roster
-          allow write: if isBanditore(sessionId);
+        // Roster: readable by all session members, written only by Cloud Functions (Admin SDK)
+        match /roster/{playerId} {
+          allow read: if isSessionMember(sid);
+          allow write: if false;
         }
       }
 
+      // ── Players (listone) ────────────────────────────────────────────────
       match /players/{playerId} {
-        allow read: if isAuthenticated();
-        // Only banditore can manage players
-        allow write: if isBanditore(sessionId);
+        allow read: if isAuth();
+        // Banditore can create players during session setup (CSV import)
+        allow create: if isBanditore(sid);
+        // Status updates (auctioning, sold, available) done only by Cloud Functions
+        allow update, delete: if false;
       }
 
+      // ── Current Auction ───────────────────────────────────────────────────
       match /currentAuction/state {
-        allow read: if isAuthenticated();
-        allow create, delete: if isBanditore(sessionId);
-        // Participants can only update the bidCount field
-        allow update: if isBanditore(sessionId) || (
-          isAuthenticated() && 
+        allow read: if isAuth();
+        // Banditore creates the initial idle state document
+        allow create: if isBanditore(sid);
+        // Banditore: full update. Participants: only bidCount increment.
+        allow update: if isBanditore(sid) || (
+          isAuth() &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['bidCount']) &&
+          request.resource.data.bidCount is int &&
           request.resource.data.bidCount == resource.data.bidCount + 1
         );
+        allow delete: if false;
 
+        // ── Bids: completely SECRET ─────────────────────────────────────────
+        // Participants write their own bid only (no reading allowed by clients)
+        // Cloud Functions read via Admin SDK, which bypasses these rules
         match /bids/{uid} {
-          // A participant can read their own bid. Banditore can read all bids.
-          allow read: if isAuthenticated() && (request.auth.uid == uid || isBanditore(sessionId));
-          // A participant can write their own bid if the auction is open.
-          // Banditore can delete bids when clearing the auction.
-          allow create, update: if isAuthenticated() && request.auth.uid == uid;
-          allow delete: if isBanditore(sessionId);
+          allow create, update: if isAuth() &&
+            request.auth.uid == uid &&
+            request.resource.data.keys().hasAll(['amount', 'submittedAt', 'round']) &&
+            request.resource.data.amount is int &&
+            request.resource.data.amount >= 1;
+          // ZERO client reads — Admin SDK only
+          allow read: if false;
+          allow delete: if false;
         }
       }
 
-      match /auctionHistory/{historyId} {
-        allow read: if isAuthenticated();
-        // Only banditore can write history
-        allow write: if isBanditore(sessionId);
+      // ── Auction History ──────────────────────────────────────────────────
+      // Readable by session members after reveal; written only by Cloud Functions
+      match /auctionHistory/{histId} {
+        allow read: if isSessionMember(sid);
+        allow write: if false;
       }
     }
   }
