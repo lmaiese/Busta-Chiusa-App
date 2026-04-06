@@ -355,6 +355,7 @@ export const closeAuction = onCall(async (request) => {
   }
 
   // Valida ogni bid: budget e slot rosa
+  const totalRosterSize: number = (sessionData.totalRosterSize as number) || 25;
   const validatedBids: { uid: string; nickname: string; amount: number }[] = [];
   for (const bid of bids) {
     const partSnap = await db
@@ -367,9 +368,23 @@ export const closeAuction = onCall(async (request) => {
 
     const rosterCount: Record<string, number> = part.rosterCount || {};
     const rosterLimits: Record<string, { max: number }> = part.rosterLimits || {};
-    const current = rosterCount[primaryRole] || 0;
-    const max = rosterLimits[primaryRole]?.max ?? 99;
-    if (current >= max) continue;
+
+    // Check rosa completa
+    const currentTotal = Object.values(rosterCount).reduce((a, b) => a + b, 0);
+    if (currentTotal >= totalRosterSize) continue;
+
+    if (format === "classic") {
+      const current = rosterCount[primaryRole] || 0;
+      const max = rosterLimits[primaryRole]?.max ?? 99;
+      if (current >= max) continue;
+    } else {
+      // Mantra: solo Por ha un vincolo di ruolo
+      if (primaryRole === "Por") {
+        const current = rosterCount["Por"] || 0;
+        const max = rosterLimits["Por"]?.max ?? 3;
+        if (current >= max) continue;
+      }
+    }
 
     validatedBids.push({ uid: bid.uid, nickname: part.nickname, amount: bid.amount });
   }
@@ -495,16 +510,39 @@ export const manualAssign = onCall(async (request) => {
     );
   }
 
-  const primaryRole = getPrimaryRole(player, sessionData.format);
+  const fmt = sessionData.format as string;
+  const primaryRole = getPrimaryRole(player, fmt);
   const rosterCount: Record<string, number> = participant.rosterCount || {};
   const rosterLimits: Record<string, { max: number }> = participant.rosterLimits || {};
-  const currentCount = rosterCount[primaryRole] || 0;
-  const maxCount = rosterLimits[primaryRole]?.max ?? 99;
-  if (currentCount >= maxCount) {
+
+  // Check rosa completa
+  const totalRosterSize: number = (sessionData.totalRosterSize as number) || 25;
+  const currentTotal = Object.values(rosterCount).reduce((a, b) => a + b, 0);
+  if (currentTotal >= totalRosterSize) {
     throw new HttpsError(
       "failed-precondition",
-      `Slot ${primaryRole} pieno per ${participant.nickname} (${currentCount}/${maxCount})`
+      `Rosa completa per ${participant.nickname} (${currentTotal}/${totalRosterSize})`
     );
+  }
+
+  if (fmt === "classic") {
+    const currentCount = rosterCount[primaryRole] || 0;
+    const maxCount = rosterLimits[primaryRole]?.max ?? 99;
+    if (currentCount >= maxCount) {
+      throw new HttpsError(
+        "failed-precondition",
+        `Slot ${primaryRole} pieno per ${participant.nickname} (${currentCount}/${maxCount})`
+      );
+    }
+  } else if (primaryRole === "Por") {
+    const currentCount = rosterCount["Por"] || 0;
+    const maxCount = rosterLimits["Por"]?.max ?? 3;
+    if (currentCount >= maxCount) {
+      throw new HttpsError(
+        "failed-precondition",
+        `Slot Por pieno per ${participant.nickname} (${currentCount}/${maxCount})`
+      );
+    }
   }
 
   const stateRef = db.doc(`sessions/${sessionId}/currentAuction/state`);

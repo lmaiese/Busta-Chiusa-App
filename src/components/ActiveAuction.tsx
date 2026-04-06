@@ -311,12 +311,16 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
     myParticipant &&
     myParticipant.budgetResiduo > 0;
 
-  // Controlla se il ruolo è pieno per questo calciatore
+  // Controlla se il ruolo è pieno o la rosa è completa
   const primaryRole = getPrimaryRole(player, format);
   const rosterCount = myParticipant?.rosterCount || {};
   const rosterLimits = myParticipant?.rosterLimits || {};
-  const rosterFull =
-    (rosterCount[primaryRole] || 0) >= (rosterLimits[primaryRole]?.max ?? 99);
+  const totalRosterSize = sessionData.totalRosterSize || 25;
+  const totalRosterCount = Object.values(rosterCount).reduce((a, b) => a + (b as number), 0);
+  const rosterFull = format === "classic"
+    ? (rosterCount[primaryRole] || 0) >= (rosterLimits[primaryRole]?.max ?? 99)
+    : totalRosterCount >= totalRosterSize ||
+      (primaryRole === "Por" && (rosterCount["Por"] || 0) >= (rosterLimits["Por"]?.max ?? 3));
 
   const mm = String(Math.floor(timeLeft / 60)).padStart(2, "0");
   const ss = String(timeLeft % 60).padStart(2, "0");

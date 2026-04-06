@@ -1,0 +1,8 @@
+{
+  "projects": {
+    "asta": "bustachiusaapp",
+    "default": "bustachiusaapp"
+  },
+  "targets": {},
+  "etags": {}
+}

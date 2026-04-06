@@ -62,25 +62,21 @@ export default function AuctionSummary() {
     if (!isBanditore) return;
     setExporting(true);
     try {
-      const csvBlocks: string[] = [];
+      const rows: string[] = [];
       for (const p of participants) {
         if (p.roster.length === 0) continue;
-        csvBlocks.push(`# ${p.nickname}`);
-        csvBlocks.push("Id;Crediti");
+        rows.push("$,$,$");
         p.roster.forEach((player) => {
-          csvBlocks.push(`${player.playerId};${player.price}`);
+          rows.push(`${p.nickname},${player.playerId},${player.price}`);
         });
-        csvBlocks.push("");
       }
-      const blob = new Blob([csvBlocks.join("\n")], {
-        type: "text/csv;charset=utf-8;",
-      });
+      rows.push("$,$,$");
+
+      const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `rose_${sessionData.code}_${new Date()
-        .toISOString()
-        .slice(0, 10)}.csv`;
+      link.download = `fanta-asta-rosters-${Date.now()}.csv`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);

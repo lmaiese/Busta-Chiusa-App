@@ -3,6 +3,7 @@ import { useSession } from "./SessionRouter";
 import { doc, onSnapshot, updateDoc } from "firebase/firestore";
 import { db } from "../firebase";
 import ActiveAuction from "../components/ActiveAuction";
+import RandomAuctionQueue from "../components/RandomAuctionQueue";
 import PlayerList from "../components/PlayerList";
 import RosterList from "../components/RosterList";
 import AuctionHistory from "../components/AuctionHistory";
@@ -265,6 +266,8 @@ export default function Auction() {
         {activeTab === "busta" && (
           isAuctionActive ? (
             <ActiveAuction currentAuction={currentAuction} />
+          ) : sessionData.auctionMode !== "manual" && isBanditore ? (
+            <RandomAuctionQueue />
           ) : (
             <BustaIdle isBanditore={isBanditore} />
           )

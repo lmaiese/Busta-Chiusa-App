@@ -69,13 +69,21 @@ export default function PlayerList({ isBanditore }: { isBanditore: boolean }) {
 
   const getRoleColor = (role: string) => {
     if (role === "P" || role === "Por") return "bg-yellow-500/20 text-yellow-400 border-yellow-500/40";
-    if (["D", "Dc", "Dd", "Ds", "B", "E"].includes(role)) return "bg-green-500/20 text-green-400 border-green-500/40";
-    if (["C", "M", "T", "W"].includes(role)) return "bg-blue-500/20 text-blue-400 border-blue-500/40";
+    if (["D", "Dc", "Dd", "Ds", "B"].includes(role)) return "bg-green-500/20 text-green-400 border-green-500/40";
+    if (["E", "M", "C"].includes(role)) return "bg-blue-500/20 text-blue-400 border-blue-500/40";
+    if (["T", "W"].includes(role)) return "bg-purple-500/20 text-purple-400 border-purple-500/40";
     if (["A", "Pc"].includes(role)) return "bg-red-500/20 text-red-400 border-red-500/40";
     return "bg-gray-500/20 text-gray-400 border-gray-500/40";
   };
 
-  const displayRole = (p: any) => (format === "classic" ? p.r : p.rm || p.r || "");
+  // Returns the list of roles to display as badges
+  const getRoleBadges = (p: any): string[] => {
+    if (format === "classic") return p.r ? [p.r] : [];
+    return parseMantraRoles(p.rm || "").length > 0
+      ? parseMantraRoles(p.rm || "")
+      : p.r ? [p.r] : [];
+  };
+
   const displayQt = (p: any) => (format === "classic" ? p.qt : p.qm) || 1;
 
   const availableCount = players.filter((p) => p.status === "available").length;
@@ -155,8 +163,6 @@ export default function PlayerList({ isBanditore }: { isBanditore: boolean }) {
         {filteredPlayers.map((p) => {
           const isSold = p.status === "sold";
           const isStarting = starting === p.id;
-          const roleDisplay = displayRole(p);
-          const primaryRole = format === "classic" ? p.r : parseMantraRoles(p.rm || "")[0] || p.r || "";
 
           return (
             <div
@@ -168,11 +174,13 @@ export default function PlayerList({ isBanditore }: { isBanditore: boolean }) {
               }`}
             >
               <div className="flex items-center gap-3 min-w-0">
-                <span
-                  className={`text-xs font-bold px-2 py-0.5 rounded border shrink-0 ${getRoleColor(primaryRole)}`}
-                >
-                  {roleDisplay}
-                </span>
+                <div className="flex gap-1 shrink-0">
+                  {getRoleBadges(p).map((r) => (
+                    <span key={r} className={`text-xs font-bold px-2 py-0.5 rounded border ${getRoleColor(r)}`}>
+                      {r}
+                    </span>
+                  ))}
+                </div>
                 <div className="min-w-0">
                   <div className="font-bold text-base truncate">{p.nome}</div>
                   <div className="text-xs text-[#5a5a90]">

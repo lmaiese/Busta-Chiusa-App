@@ -1,20 +1,33 @@
 import { initializeApp } from "firebase/app";
 import {
   getAuth,
+  connectAuthEmulator,
   GoogleAuthProvider,
   signInWithPopup,
   signInAnonymously,
   signOut,
 } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
-import { getFunctions, httpsCallable } from "firebase/functions";
+import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
+import { getFunctions, httpsCallable, connectFunctionsEmulator } from "firebase/functions";
 import firebaseConfig from "../firebase-applet-config.json";
 
 const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+// In DEV the emulator only supports the default database.
+// In production use the named database from config (if set).
+export const db = import.meta.env.DEV
+  ? getFirestore(app)
+  : (firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== "(default)"
+      ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
+      : getFirestore(app));
 export const functions = getFunctions(app, "us-central1");
+
+if (import.meta.env.DEV) {
+  connectAuthEmulator(auth, "http://localhost:9099");
+  connectFirestoreEmulator(db, "localhost", 2727);
+  connectFunctionsEmulator(functions, "localhost", 5001);
+}
 
 // ── Auth helpers ─────────────────────────────────────────────────────────
 export const signInWithGoogle = () => signInWithPopup(auth, new GoogleAuthProvider());
@@ -73,19 +86,20 @@ export function getDefaultRosterLimits(format: string) {
   if (format === "classic") {
     return { P: { min: 3, max: 3 }, D: { min: 8, max: 8 }, C: { min: 8, max: 8 }, A: { min: 6, max: 6 } };
   }
+  // Mantra: only Por is constrained by role. All others unconstrained (total capped by totalRosterSize).
   return {
     Por: { min: 2, max: 3 },
-    Dc: { min: 4, max: 7 },
-    Dd: { min: 1, max: 3 },
-    Ds: { min: 1, max: 3 },
-    B: { min: 0, max: 3 },
-    E: { min: 0, max: 3 },
-    M: { min: 1, max: 4 },
-    C: { min: 2, max: 5 },
-    T: { min: 1, max: 4 },
-    W: { min: 1, max: 4 },
-    A: { min: 1, max: 3 },
-    Pc: { min: 2, max: 4 },
+    Dc: { min: 0, max: 99 },
+    Dd: { min: 0, max: 99 },
+    Ds: { min: 0, max: 99 },
+    B:  { min: 0, max: 99 },
+    E:  { min: 0, max: 99 },
+    M:  { min: 0, max: 99 },
+    C:  { min: 0, max: 99 },
+    T:  { min: 0, max: 99 },
+    W:  { min: 0, max: 99 },
+    A:  { min: 0, max: 99 },
+    Pc: { min: 0, max: 99 },
   };
 }
 
