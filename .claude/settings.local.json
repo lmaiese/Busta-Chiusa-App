@@ -9,7 +9,9 @@
       "Bash(node -e ':*)",
       "Bash(npm install:*)",
       "Bash(npx tsc:*)",
-      "Bash(netstat -ano)"
+      "Bash(netstat -ano)",
+      "Bash(npm run:*)",
+      "Bash(firebase deploy:*)"
     ]
   }
 }
