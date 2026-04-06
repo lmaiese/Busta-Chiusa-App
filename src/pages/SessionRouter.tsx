@@ -12,6 +12,7 @@ import {
 import { useAuth } from "../context/AuthContext";
 import Lobby from "./Lobby";
 import Auction from "./Auction";
+import AuctionSummary from "./AuctionSummary";
 
 interface SessionContextType {
   sessionId: string;
@@ -38,7 +39,7 @@ export default function SessionRouter() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  // Listen to session document
+  // ── Ascolta il documento sessione ────────────────────────────────────
   useEffect(() => {
     if (!sessionId || !user) return;
 
@@ -54,8 +55,10 @@ export default function SessionRouter() {
         }
       },
       (err) => {
-        // If anonymous user gets permission denied, token may be stale
-        if (err.message?.includes("Missing or insufficient permissions") && user.isAnonymous) {
+        if (
+          err.message?.includes("Missing or insufficient permissions") &&
+          user.isAnonymous
+        ) {
           auth.signOut().then(() => navigate("/"));
           return;
         }
@@ -76,7 +79,16 @@ export default function SessionRouter() {
     return unsub;
   }, [sessionId, user, navigate]);
 
-  // Register participant on first join
+  // ── Redirect automatico a /summary quando la sessione termina ───────
+  useEffect(() => {
+    if (!sessionData || !sessionId) return;
+    if (sessionData.status !== "completed") return;
+    // Evita loop se siamo già sulla pagina summary
+    if (location.pathname.endsWith("/summary")) return;
+    navigate(`/session/${sessionId}/summary`, { replace: true });
+  }, [sessionData?.status, sessionId, navigate, location.pathname]);
+
+  // ── Registra il partecipante al primo accesso ────────────────────────
   useEffect(() => {
     if (!sessionData || !user || !sessionId) return;
 
@@ -85,7 +97,10 @@ export default function SessionRouter() {
 
     if (!isBanditore && nickname) {
       const format = sessionData.format || "classic";
-      const participantRef = doc(db, `sessions/${sessionId}/participants/${user.uid}`);
+      const participantRef = doc(
+        db,
+        `sessions/${sessionId}/participants/${user.uid}`
+      );
 
       setDoc(
         participantRef,
@@ -93,14 +108,19 @@ export default function SessionRouter() {
           nickname,
           budgetResiduo: sessionData.budget,
           rosterCount: getInitialRosterCount(format),
-          rosterLimits: sessionData.rosterLimits || getDefaultRosterLimits(format),
+          rosterLimits:
+            sessionData.rosterLimits || getDefaultRosterLimits(format),
           isConnected: true,
           joinedAt: serverTimestamp(),
         },
         { merge: true }
       ).catch((err) => {
         try {
-          handleFirestoreError(err, OperationType.WRITE, `sessions/${sessionId}/participants/${user.uid}`);
+          handleFirestoreError(
+            err,
+            OperationType.WRITE,
+            `sessions/${sessionId}/participants/${user.uid}`
+          );
         } catch (e: any) {
           try {
             const parsed = JSON.parse(e.message);
@@ -113,10 +133,13 @@ export default function SessionRouter() {
     }
   }, [sessionData, user, sessionId, location.state]);
 
+  // ── Loading / error states ───────────────────────────────────────────
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-[#5a5a90] animate-pulse">Caricamento sessione...</div>
+        <div className="text-[#5a5a90] animate-pulse">
+          Caricamento sessione...
+        </div>
       </div>
     );
   }
@@ -135,11 +158,17 @@ export default function SessionRouter() {
 
   return (
     <SessionContext.Provider
-      value={{ sessionId: sessionId!, sessionData, isBanditore, participantId: user.uid }}
+      value={{
+        sessionId: sessionId!,
+        sessionData,
+        isBanditore,
+        participantId: user.uid,
+      }}
     >
       <Routes>
         <Route path="/" element={<Lobby />} />
         <Route path="/auction" element={<Auction />} />
+        <Route path="/summary" element={<AuctionSummary />} />
       </Routes>
     </SessionContext.Provider>
   );

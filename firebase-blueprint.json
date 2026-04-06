@@ -157,6 +157,30 @@
           "items": { "type": "string" },
           "description": "UIDs of participants in the tiebreak"
         },
+        "allBids": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "uid": { "type": "string" },
+              "nickname": { "type": "string" },
+              "amount": { "type": "number" }
+            }
+          },
+          "description": "All validated bids, populated after closing"
+        },
+        "winnerId": {
+          "type": "string",
+          "description": "UID of the winner (populated in revealed/tiebreak)"
+        },
+        "winnerNickname": {
+          "type": "string",
+          "description": "Nickname of the winner (populated in revealed)"
+        },
+        "price": {
+          "type": "number",
+          "description": "Final price paid (populated in revealed)"
+        },
         "wasRandom": {
           "type": "boolean",
           "description": "True if assigned randomly in R3"
@@ -255,9 +279,17 @@
           "type": "string",
           "description": "Name of the player"
         },
+        "squadra": {
+          "type": "string",
+          "description": "Serie A team"
+        },
         "role": {
           "type": "string",
-          "description": "Role in the roster"
+          "description": "Primary role used for slot counting (e.g. Dc, A, P)"
+        },
+        "roleRaw": {
+          "type": "string",
+          "description": "Raw role string from CSV (classic: r, mantra: rm with / separators)"
         },
         "price": {
           "type": "number",
@@ -289,9 +321,9 @@
       "schema": { "$ref": "#/entities/CurrentAuction" },
       "description": "The currently active auction for a session"
     },
-    "/sessions/{sessionId}/currentAuction/state/bids/{bidId}": {
+    "/sessions/{sessionId}/currentAuction/state/bids/{participantId}": {
       "schema": { "$ref": "#/entities/Bid" },
-      "description": "Bids placed in the current auction"
+      "description": "Bids placed in the current auction. Document ID = participant UID (one bid per participant, overwritten on change)"
     },
     "/sessions/{sessionId}/auctionHistory/{historyId}": {
       "schema": { "$ref": "#/entities/AuctionHistory" },

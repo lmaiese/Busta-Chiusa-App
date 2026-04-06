@@ -4,7 +4,6 @@ import {
   setDoc,
   updateDoc,
   serverTimestamp,
-  increment,
   onSnapshot,
   collection,
   getDocs,
@@ -21,7 +20,7 @@ import {
 import { useSession } from "../pages/SessionRouter";
 import { X, Check, Loader, AlertTriangle } from "lucide-react";
 
-// ── Manual assign modal ──────────────────────────────────────────────────
+// ── Modal assegnazione manuale ────────────────────────────────────────────
 function ManualAssignModal({
   sessionId,
   currentAuction,
@@ -124,7 +123,7 @@ function ManualAssignModal({
   );
 }
 
-// ── Main component ───────────────────────────────────────────────────────
+// ── Componente principale ─────────────────────────────────────────────────
 export default function ActiveAuction({ currentAuction }: { currentAuction: any }) {
   const { sessionId, isBanditore, participantId, sessionData } = useSession();
   const format = sessionData.format as "classic" | "mantra";
@@ -143,7 +142,7 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoClosedRef = useRef(false);
 
-  // Listen to player data
+  // Ascolta i dati del calciatore in asta
   useEffect(() => {
     if (!currentAuction?.playerId) return;
     const unsub = onSnapshot(
@@ -153,7 +152,7 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
     return unsub;
   }, [currentAuction?.playerId, sessionId]);
 
-  // Listen to participant data
+  // Ascolta i dati del partecipante (budget)
   useEffect(() => {
     if (!participantId) return;
     const unsub = onSnapshot(
@@ -163,7 +162,7 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
     return unsub;
   }, [participantId, sessionId]);
 
-  // Reset bid state when auction changes
+  // Reset stato bid quando cambia il calciatore o il round
   useEffect(() => {
     setBidAmount("");
     setMyBidSent(false);
@@ -172,7 +171,7 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
     setFnError("");
   }, [currentAuction?.playerId, currentAuction?.round]);
 
-  // Server-accurate timer
+  // Timer server-accurate
   useEffect(() => {
     if (currentAuction?.status !== "open" || !currentAuction?.timerEnd) {
       setTimeLeft(0);
@@ -265,24 +264,23 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
     if (bidAmount.length < 4) setBidAmount((p) => p + val);
   };
 
+  // ── Invia offerta ─────────────────────────────────────────────────────
+  // NOTA: bidCount NON viene più incrementato qui.
+  // Lo fa il trigger Cloud Function `onBidWritten` (solo su CREATE).
+  // Questo elimina la race condition causata da myBidSent (stato React locale).
   const submitBid = async () => {
     if (!participantId || !bidAmount) return;
     const amount = parseInt(bidAmount, 10);
     if (!amount || amount < 1) return;
     if (myParticipant && amount > myParticipant.budgetResiduo) return;
 
-    const isNewBid = !myBidSent;
-
+    // setDoc con merge: false → crea o sovrascrive completamente il documento
+    // Se è un CREATE il trigger CF incrementa bidCount
+    // Se è un UPDATE (modifica offerta) il trigger non fa nulla
     await setDoc(
       doc(db, `sessions/${sessionId}/currentAuction/state/bids/${participantId}`),
       { amount, submittedAt: serverTimestamp(), round: currentAuction.round || 1 }
     );
-
-    if (isNewBid) {
-      await updateDoc(doc(db, `sessions/${sessionId}/currentAuction/state`), {
-        bidCount: increment(1),
-      });
-    }
 
     setMyBidSent(true);
     setMyBidAmount(amount);
@@ -313,7 +311,7 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
     myParticipant &&
     myParticipant.budgetResiduo > 0;
 
-  // ── Determine roster fullness for this player ──
+  // Controlla se il ruolo è pieno per questo calciatore
   const primaryRole = getPrimaryRole(player, format);
   const rosterCount = myParticipant?.rosterCount || {};
   const rosterLimits = myParticipant?.rosterLimits || {};
@@ -333,7 +331,7 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
         />
       )}
 
-      {/* Header */}
+      {/* Header calciatore */}
       <div className="bg-[#0b0b1c] border-b border-[#111128] p-4 relative">
         <div className="text-[#5a5a90] text-xs uppercase tracking-widest mb-1 text-center">
           {status === "tiebreak" ? `Spareggio Round ${currentAuction.round}` : "Busta aperta"}
@@ -372,7 +370,8 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
       )}
 
       <div className="flex-1 flex flex-col items-center justify-center p-4 max-w-sm mx-auto w-full">
-        {/* ── OPEN ────────────────────────────────────────── */}
+
+        {/* ── OPEN ──────────────────────────────────────── */}
         {status === "open" && (
           <>
             {/* Timer */}
@@ -384,13 +383,13 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
               {mm}:{ss}
             </div>
 
-            {/* Bid count */}
+            {/* Contatore offerte */}
             <div className="bg-[#111128] rounded-full px-5 py-1.5 text-sm text-[#5a5a90] mb-6 flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-[#00e5ff] animate-pulse" />
               {currentAuction.bidCount || 0} offerte ricevute
             </div>
 
-            {/* Participant bid input */}
+            {/* Input offerta partecipante */}
             {canBid && (
               <div className="w-full">
                 {rosterFull && (
@@ -427,7 +426,7 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
                   </div>
                 </div>
 
-                {/* Keypad */}
+                {/* Tastiera numerica */}
                 <div className="grid grid-cols-3 gap-2 mb-3">
                   {["1","2","3","4","5","6","7","8","9","C","0","⌫"].map((k) => (
                     <button
@@ -465,7 +464,7 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
               </div>
             )}
 
-            {/* Banditore close button */}
+            {/* Pulsante chiusura anticipata banditore */}
             {isBanditore && (
               <button
                 onClick={handleCloseAuction}
@@ -477,7 +476,7 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
               </button>
             )}
 
-            {/* Spectator message */}
+            {/* Spettatore non in tiebreak */}
             {!isBanditore && !canBid && (
               <div className="text-[#5a5a90] text-center">
                 {currentAuction.round > 1 && !isTiebreakParticipant
@@ -488,21 +487,22 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
           </>
         )}
 
-        {/* ── CLOSING ─────────────────────────────────────── */}
+        {/* ── CLOSING ─────────────────────────────────── */}
         {status === "closing" && (
           <div className="text-[#00e5ff] text-2xl font-bold animate-pulse">
             Apertura buste in corso...
           </div>
         )}
 
-        {/* ── TIEBREAK ────────────────────────────────────── */}
+        {/* ── TIEBREAK ────────────────────────────────── */}
         {status === "tiebreak" && (
           <div className="text-center w-full">
             <div className="text-5xl mb-4">⚖️</div>
             <h2 className="text-3xl font-black mb-2">PARITÀ!</h2>
-            <p className="text-[#5a5a90] mb-2">Round {currentAuction.round} — Spareggio in arrivo</p>
+            <p className="text-[#5a5a90] mb-2">
+              Round {currentAuction.round} — Spareggio in arrivo
+            </p>
 
-            {/* Show tied bids */}
             {currentAuction.allBids?.length > 0 && (
               <div className="bg-[#0b0b1c] border border-[#111128] rounded-2xl overflow-hidden mb-6 text-left">
                 <div className="bg-[#111128] px-4 py-2 text-xs text-[#5a5a90] uppercase tracking-wider">
@@ -533,7 +533,7 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
           </div>
         )}
 
-        {/* ── REVEALED ────────────────────────────────────── */}
+        {/* ── REVEALED ────────────────────────────────── */}
         {status === "revealed" && (
           <div className="w-full">
             <div className="text-center mb-6">
@@ -557,11 +557,13 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
                   )}
                 </>
               ) : (
-                <h2 className="text-2xl font-black text-[#ff3d71]">Nessuna offerta valida</h2>
+                <h2 className="text-2xl font-black text-[#ff3d71]">
+                  Nessuna offerta valida
+                </h2>
               )}
             </div>
 
-            {/* All bids ranking */}
+            {/* Ranking offerte */}
             {currentAuction.allBids?.length > 0 && (
               <div className="bg-[#0b0b1c] border border-[#111128] rounded-2xl overflow-hidden mb-6">
                 <div className="bg-[#111128] px-4 py-2 text-xs text-[#5a5a90] uppercase tracking-wider">
@@ -575,7 +577,9 @@ export default function ActiveAuction({ currentAuction }: { currentAuction: any 
                     }`}
                   >
                     <div className="flex items-center gap-2">
-                      {i === 0 && <span className="text-[#ffaa00] text-xs font-bold">WIN</span>}
+                      {i === 0 && (
+                        <span className="text-[#ffaa00] text-xs font-bold">WIN</span>
+                      )}
                       <span className={`font-bold ${i === 0 ? "text-[#00e5ff]" : "text-white"}`}>
                         {b.nickname}
                       </span>

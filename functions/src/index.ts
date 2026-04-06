@@ -1,6 +1,7 @@
 import { initializeApp } from "firebase-admin/app";
 import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
+import { onDocumentWritten } from "firebase-functions/v2/firestore";
 import { logger } from "firebase-functions/v2";
 
 initializeApp();
@@ -180,12 +181,51 @@ async function processAssignment(params: {
 }
 
 // ═══════════════════════════════════════════════
+// FIRESTORE TRIGGER — bidCount server-side
+// ═══════════════════════════════════════════════
+
+/**
+ * Incrementa bidCount solo quando viene CREATA una nuova bid
+ * (non quando viene aggiornata da un partecipante che modifica l'offerta).
+ *
+ * Il client scrive direttamente su bids/{uid} ma NON tocca più bidCount.
+ * Questo elimina la race condition causata dallo stato React locale myBidSent.
+ */
+export const onBidWritten = onDocumentWritten(
+  "sessions/{sessionId}/currentAuction/state/bids/{uid}",
+  async (event) => {
+    // Interessa solo il CREATE: before non esiste, after esiste
+    const wasCreated =
+      !event.data?.before.exists && event.data?.after.exists;
+
+    if (!wasCreated) return;
+
+    const { sessionId } = event.params;
+    const stateRef = db.doc(
+      `sessions/${sessionId}/currentAuction/state`
+    );
+
+    try {
+      await stateRef.update({
+        bidCount: FieldValue.increment(1),
+      });
+      logger.info(
+        `bidCount incremented for session=${sessionId} uid=${event.params.uid}`
+      );
+    } catch (err) {
+      // Non fatale: lo stato potrebbe essere già 'closing' o 'revealed'
+      logger.warn(`onBidWritten: could not increment bidCount`, err);
+    }
+  }
+);
+
+// ═══════════════════════════════════════════════
 // CALLABLE FUNCTIONS
 // ═══════════════════════════════════════════════
 
 /**
- * Start (or restart for tiebreak) an auction.
- * Sets timerEnd using server-side timestamp for accuracy.
+ * Avvia (o riavvia per tiebreak) una busta.
+ * Scrive timerEnd server-side per accuratezza cross-device.
  */
 export const startAuction = onCall(async (request) => {
   const uid = validateAuth(request);
@@ -212,7 +252,7 @@ export const startAuction = onCall(async (request) => {
     throw new HttpsError("failed-precondition", "Player is already sold");
   }
 
-  // Delete all bids from previous round
+  // Elimina tutte le bid del round precedente
   const bidsSnap = await db
     .collection(`sessions/${sessionId}/currentAuction/state/bids`)
     .get();
@@ -251,9 +291,9 @@ export const startAuction = onCall(async (request) => {
 });
 
 /**
- * Close the current auction and process all bids.
- * Reads bids via Admin SDK (bypasses client security rules → true secrecy).
- * Handles tiebreak logic and random R3 assignment.
+ * Chiude la busta corrente e processa le offerte.
+ * Legge le bid via Admin SDK (invisibili ai client).
+ * Gestisce tiebreak e sorteggio R3.
  */
 export const closeAuction = onCall(async (request) => {
   const uid = validateAuth(request);
@@ -262,7 +302,7 @@ export const closeAuction = onCall(async (request) => {
   const sessionData = await verifyBanditore(sessionId, uid);
   const stateRef = db.doc(`sessions/${sessionId}/currentAuction/state`);
 
-  // Atomically set status to 'closing' to prevent duplicate closes
+  // Transazione atomica: impedisce doppia chiusura concorrente
   let auctionState: FirebaseFirestore.DocumentData;
   try {
     auctionState = await db.runTransaction(async (t) => {
@@ -298,13 +338,13 @@ export const closeAuction = onCall(async (request) => {
   const format = sessionData.format as string;
   const primaryRole = getPrimaryRole(player, format);
 
-  // Read ALL bids via Admin SDK (invisible to clients)
+  // Legge tutte le bid via Admin SDK (bypassa le security rules)
   const bidsSnap = await db
     .collection(`sessions/${sessionId}/currentAuction/state/bids`)
     .get();
   let bids = bidsSnap.docs.map((d) => ({ uid: d.id, ...(d.data() as { amount: number }) }));
 
-  // Filter to tiebreak participants if applicable
+  // Filtra per partecipanti al tiebreak se applicabile
   if (round > 1 && tiebreakParticipants && tiebreakParticipants.length > 0) {
     bids = bids.filter((b) => tiebreakParticipants.includes(b.uid));
   }
@@ -314,7 +354,7 @@ export const closeAuction = onCall(async (request) => {
     return { result: "cancelled", reason: "no_bids" };
   }
 
-  // Validate each bid: budget + roster space
+  // Valida ogni bid: budget e slot rosa
   const validatedBids: { uid: string; nickname: string; amount: number }[] = [];
   for (const bid of bids) {
     const partSnap = await db
@@ -351,7 +391,7 @@ export const closeAuction = onCall(async (request) => {
 
   if (winners.length > 1) {
     if (round < 3) {
-      // Tiebreak: open new round for pareggianti only
+      // Tiebreak: nuova busta solo per i pareggianti
       await stateRef.update({
         status: "tiebreak",
         tiebreakParticipants: winners.map((w) => w.uid),
@@ -364,7 +404,7 @@ export const closeAuction = onCall(async (request) => {
         tiebreakNicknames: winners.map((w) => w.nickname),
       };
     } else {
-      // R3: random assignment at price + 1 credito
+      // R3: sorteggio casuale server-side, prezzo = maxAmount + 1
       const winner = winners[Math.floor(Math.random() * winners.length)];
       const finalPrice = maxAmount + 1;
       await processAssignment({
@@ -392,7 +432,7 @@ export const closeAuction = onCall(async (request) => {
 });
 
 /**
- * Cancel the current auction. Player returns to available.
+ * Annulla la busta corrente. Il calciatore torna disponibile.
  */
 export const cancelAuction = onCall(async (request) => {
   const uid = validateAuth(request);
@@ -419,8 +459,8 @@ export const cancelAuction = onCall(async (request) => {
 });
 
 /**
- * Manually assign any player to any participant with a custom price.
- * Banditore override — bypasses auction flow.
+ * Assegnazione manuale da parte del banditore.
+ * Bypassa il flusso d'asta — prezzo libero.
  */
 export const manualAssign = onCall(async (request) => {
   const uid = validateAuth(request);
@@ -452,6 +492,18 @@ export const manualAssign = onCall(async (request) => {
     throw new HttpsError(
       "invalid-argument",
       `Price (${price}) exceeds participant budget (${participant.budgetResiduo})`
+    );
+  }
+
+  const primaryRole = getPrimaryRole(player, sessionData.format);
+  const rosterCount: Record<string, number> = participant.rosterCount || {};
+  const rosterLimits: Record<string, { max: number }> = participant.rosterLimits || {};
+  const currentCount = rosterCount[primaryRole] || 0;
+  const maxCount = rosterLimits[primaryRole]?.max ?? 99;
+  if (currentCount >= maxCount) {
+    throw new HttpsError(
+      "failed-precondition",
+      `Slot ${primaryRole} pieno per ${participant.nickname} (${currentCount}/${maxCount})`
     );
   }
 
