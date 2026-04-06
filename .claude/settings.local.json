@@ -11,7 +11,12 @@
       "Bash(npx tsc:*)",
       "Bash(netstat -ano)",
       "Bash(npm run:*)",
-      "Bash(firebase deploy:*)"
+      "Bash(firebase deploy:*)",
+      "Bash(where firebase:*)",
+      "Read(//c/Users/luigi/AppData/Roaming/npm/**)",
+      "Read(//c/Users/luigi/.cache/firebase/tools/bin/**)",
+      "Bash(export PATH=\"$PATH:/c/Users/luigi/.cache/firebase/tools/lib/node_modules/.bin\")",
+      "Bash(node:*)"
     ]
   }
 }
