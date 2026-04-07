@@ -60,6 +60,16 @@ export const manualAssignFn = httpsCallable<
   { result: string; winner: string; price: number }
 >(functions, "manualAssign");
 
+export const undoLastAssignmentFn = httpsCallable<
+  { sessionId: string },
+  { result: string }
+>(functions, "undoLastAssignment");
+
+export const designateUnderFn = httpsCallable<
+  { sessionId: string; participantId: string; playerId: string; isUnder: boolean },
+  { result: string }
+>(functions, "designateUnder");
+
 // ── Mantra constants (shared client-side) ────────────────────────────────
 export const CLASSIC_ROLES = ["P", "D", "C", "A"] as const;
 export const MANTRA_ROLES = [

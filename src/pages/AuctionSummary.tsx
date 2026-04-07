@@ -12,6 +12,7 @@ interface RosterPlayer {
   role: string;
   roleRaw?: string;
   price: number;
+  isUnder?: boolean;
 }
 
 interface ParticipantSummary {
@@ -64,21 +65,22 @@ export default function AuctionSummary() {
     if (!isBanditore) return;
     setExporting(true);
     try {
-      const rows: string[] = [];
+      const blocks: string[] = [];
       for (const p of participants) {
         if (p.roster.length === 0) continue;
-        rows.push("$,$,$");
+        blocks.push(`# ${p.nickname}`);
+        blocks.push("Id;Crediti");
         p.roster.forEach((player) => {
-          rows.push(`${p.nickname},${player.playerId},${player.price}`);
+          blocks.push(`${player.playerId};${player.price}`);
         });
+        blocks.push("");
       }
-      rows.push("$,$,$");
 
-      const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8;" });
+      const blob = new Blob([blocks.join("\n")], { type: "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `fanta-asta-rosters-${Date.now()}.csv`;
+      link.download = `rose_${sessionData.code}_${new Date().toISOString().slice(0, 10)}.csv`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -242,11 +244,16 @@ export default function AuctionSummary() {
                         className="px-4 py-2.5 flex items-center justify-between gap-2"
                       >
                         <div className="flex items-center gap-2 min-w-0">
-                          <span
-                            className={`text-xs font-bold shrink-0 ${getRoleColor(player.role)}`}
-                          >
-                            {player.role}
-                          </span>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <span className={`text-xs font-bold ${getRoleColor(player.role)}`}>
+                              {player.role}
+                            </span>
+                            {(player as any).isUnder && (
+                              <span className="text-xs font-bold px-1 py-0.5 rounded border border-[#ffaa00]/40 bg-[#ffaa00]/10 text-[#ffaa00] leading-none">
+                                U
+                              </span>
+                            )}
+                          </div>
                           <div className="min-w-0">
                             <div className="font-medium text-sm truncate">
                               {player.nome}

@@ -122,62 +122,63 @@ async function processAssignment(params: {
 
   const primaryRole = getPrimaryRole(player, format);
 
+  const playerRef = db.doc(`sessions/${sessionId}/players/${playerId}`);
   const winnerRef = db.doc(`sessions/${sessionId}/participants/${winnerId}`);
-  const winnerSnap = await winnerRef.get();
-  if (!winnerSnap.exists) throw new HttpsError("not-found", "Winner participant not found");
-  const winnerData = winnerSnap.data()!;
-
-  const newBudget = winnerData.budgetResiduo - price;
-  const updatedRosterCount = { ...(winnerData.rosterCount || {}) };
-  updatedRosterCount[primaryRole] = (updatedRosterCount[primaryRole] || 0) + 1;
-
-  const batch = db.batch();
-
-  batch.update(db.doc(`sessions/${sessionId}/players/${playerId}`), {
-    status: "sold",
-    soldTo: winnerId,
-    soldPrice: price,
-  });
-
-  batch.update(winnerRef, {
-    budgetResiduo: newBudget,
-    rosterCount: updatedRosterCount,
-  });
-
-  batch.set(db.doc(`sessions/${sessionId}/participants/${winnerId}/roster/${playerId}`), {
-    playerId,
-    nome: player.nome || "",
-    squadra: player.squadra || "",
-    role: primaryRole,
-    roleRaw: format === "classic" ? player.r : player.rm,
-    price,
-    assignedAt: FieldValue.serverTimestamp(),
-  });
-
+  const rosterRef = db.doc(`sessions/${sessionId}/participants/${winnerId}/roster/${playerId}`);
+  // Auto-ID generato prima della transazione
   const histRef = db.collection(`sessions/${sessionId}/auctionHistory`).doc();
-  batch.set(histRef, {
-    playerId,
-    playerNome: player.nome || "",
-    winnerUid: winnerId,
-    winnerNickname,
-    price,
-    allBids,
-    rounds,
-    wasRandom,
-    wasCancelled: false,
-    completedAt: FieldValue.serverTimestamp(),
-  });
 
-  batch.update(stateRef, {
-    status: "revealed",
-    winnerId,
-    winnerNickname,
-    price,
-    wasRandom,
-    allBids,
-  });
+  await db.runTransaction(async (t) => {
+    // Ri-legge il vincitore dentro la transazione per evitare race condition sul budget
+    const winnerSnap = await t.get(winnerRef);
+    if (!winnerSnap.exists) throw new HttpsError("not-found", "Winner participant not found");
+    const winnerData = winnerSnap.data()!;
 
-  await batch.commit();
+    // Ri-valida il budget atomicamente: impedisce budget negativo da assegnazioni concorrenti
+    if (winnerData.budgetResiduo < price) {
+      throw new HttpsError(
+        "failed-precondition",
+        `Budget insufficiente: disponibile ${winnerData.budgetResiduo}, richiesto ${price}`
+      );
+    }
+
+    const newBudget = winnerData.budgetResiduo - price;
+    const updatedRosterCount = { ...(winnerData.rosterCount || {}) };
+    updatedRosterCount[primaryRole] = (updatedRosterCount[primaryRole] || 0) + 1;
+
+    t.update(playerRef, { status: "sold", soldTo: winnerId, soldPrice: price });
+    t.update(winnerRef, { budgetResiduo: newBudget, rosterCount: updatedRosterCount });
+    t.set(rosterRef, {
+      playerId,
+      nome: player.nome || "",
+      squadra: player.squadra || "",
+      role: primaryRole,
+      roleRaw: format === "classic" ? player.r : player.rm,
+      price,
+      assignedAt: FieldValue.serverTimestamp(),
+    });
+    t.set(histRef, {
+      playerId,
+      playerNome: player.nome || "",
+      winnerUid: winnerId,
+      winnerNickname,
+      price,
+      allBids,
+      rounds,
+      wasRandom,
+      wasCancelled: false,
+      completedAt: FieldValue.serverTimestamp(),
+    });
+    t.update(stateRef, {
+      status: "revealed",
+      winnerId,
+      winnerNickname,
+      price,
+      wasRandom,
+      allBids,
+      lastAssignment: { playerId, winnerId, price, primaryRole, historyId: histRef.id },
+    });
+  });
 }
 
 // ═══════════════════════════════════════════════
@@ -367,17 +368,22 @@ export const closeAuction = onCall({ invoker: "public" }, async (request) => {
 
       const rosterCount: Record<string, number> = part.rosterCount || {};
       const rosterLimits: Record<string, { max: number }> = part.rosterLimits || {};
+      const underCount: number = part.underCount || 0;
+      const underRoleFreed: Record<string, number> = part.underRoleFreed || {};
 
-      // Check rosa completa
+      // Check rosa completa (gli slot under espandono il limite totale)
       const currentTotal = Object.values(rosterCount).reduce((a, b) => a + b, 0);
-      if (currentTotal >= totalRosterSize) continue;
+      const effectiveTotalMax = totalRosterSize + underCount;
+      if (currentTotal >= effectiveTotalMax) continue;
 
       if (format === "classic") {
         const current = rosterCount[primaryRole] || 0;
-        const max = rosterLimits[primaryRole]?.max ?? 99;
-        if (current >= max) continue;
+        const baseMax = rosterLimits[primaryRole]?.max ?? 99;
+        // Le designazioni under Classic liberano uno slot di ruolo
+        const effectiveMax = baseMax + (underRoleFreed[primaryRole] || 0);
+        if (current >= effectiveMax) continue;
       } else {
-        // Mantra: solo Por ha un vincolo di ruolo
+        // Mantra: solo Por ha un vincolo di ruolo (under non libera slot di ruolo)
         if (primaryRole === "Por") {
           const current = rosterCount["Por"] || 0;
           const max = rosterLimits["Por"]?.max ?? 3;
@@ -492,8 +498,8 @@ export const manualAssign = onCall({ invoker: "public" }, async (request) => {
 
   const sessionData = await verifyBanditore(sessionId, uid);
 
-  if (typeof price !== "number" || price < 0) {
-    throw new HttpsError("invalid-argument", "Price must be a non-negative number");
+  if (typeof price !== "number" || price < 1) {
+    throw new HttpsError("invalid-argument", "Price must be at least 1 credit");
   }
 
   const [playerSnap, partSnap] = await Promise.all([
@@ -518,24 +524,28 @@ export const manualAssign = onCall({ invoker: "public" }, async (request) => {
   const primaryRole = getPrimaryRole(player, fmt);
   const rosterCount: Record<string, number> = participant.rosterCount || {};
   const rosterLimits: Record<string, { max: number }> = participant.rosterLimits || {};
+  const underCount: number = participant.underCount || 0;
+  const underRoleFreed: Record<string, number> = participant.underRoleFreed || {};
 
-  // Check rosa completa
+  // Check rosa completa (gli slot under espandono il limite totale)
   const totalRosterSize: number = (sessionData.totalRosterSize as number) || 25;
   const currentTotal = Object.values(rosterCount).reduce((a, b) => a + b, 0);
-  if (currentTotal >= totalRosterSize) {
+  const effectiveTotalMax = totalRosterSize + underCount;
+  if (currentTotal >= effectiveTotalMax) {
     throw new HttpsError(
       "failed-precondition",
-      `Rosa completa per ${participant.nickname} (${currentTotal}/${totalRosterSize})`
+      `Rosa completa per ${participant.nickname} (${currentTotal}/${effectiveTotalMax})`
     );
   }
 
   if (fmt === "classic") {
     const currentCount = rosterCount[primaryRole] || 0;
-    const maxCount = rosterLimits[primaryRole]?.max ?? 99;
-    if (currentCount >= maxCount) {
+    const baseMax = rosterLimits[primaryRole]?.max ?? 99;
+    const effectiveMax = baseMax + (underRoleFreed[primaryRole] || 0);
+    if (currentCount >= effectiveMax) {
       throw new HttpsError(
         "failed-precondition",
-        `Slot ${primaryRole} pieno per ${participant.nickname} (${currentCount}/${maxCount})`
+        `Slot ${primaryRole} pieno per ${participant.nickname} (${currentCount}/${effectiveMax})`
       );
     }
   } else if (primaryRole === "Por") {
@@ -562,6 +572,211 @@ export const manualAssign = onCall({ invoker: "public" }, async (request) => {
 
   logger.info(`Manual assign: ${participant.nickname} gets ${player.nome} for ${price}`);
   return { result: "assigned", winner: participant.nickname, price };
+});
+
+/**
+ * Annulla l'ultima assegnazione. Disponibile solo subito dopo il reveal.
+ * Ripristina budget, rosterCount, rimuove il calciatore dalla rosa e dallo storico.
+ */
+export const undoLastAssignment = onCall({ invoker: "public" }, async (request) => {
+  const uid = validateAuth(request);
+  const { sessionId } = request.data as { sessionId: string };
+
+  const sessionData = await verifyBanditore(sessionId, uid);
+
+  const stateRef = db.doc(`sessions/${sessionId}/currentAuction/state`);
+  const stateSnap = await stateRef.get();
+  if (!stateSnap.exists) throw new HttpsError("not-found", "No auction state");
+  const state = stateSnap.data()!;
+
+  if (state.status !== "revealed") {
+    throw new HttpsError("failed-precondition", "Undo disponibile solo subito dopo il reveal");
+  }
+
+  const last = state.lastAssignment as {
+    playerId: string;
+    winnerId: string;
+    price: number;
+    primaryRole: string;
+    historyId: string;
+  } | null;
+
+  if (!last?.winnerId) {
+    throw new HttpsError("failed-precondition", "Nessuna assegnazione da annullare");
+  }
+
+  const { playerId, winnerId, price, primaryRole, historyId } = last;
+
+  const playerRef  = db.doc(`sessions/${sessionId}/players/${playerId}`);
+  const winnerRef  = db.doc(`sessions/${sessionId}/participants/${winnerId}`);
+  const rosterRef  = db.doc(`sessions/${sessionId}/participants/${winnerId}/roster/${playerId}`);
+  const histRef    = db.doc(`sessions/${sessionId}/auctionHistory/${historyId}`);
+
+  await db.runTransaction(async (t) => {
+    const [winnerSnap, rosterDocSnap] = await Promise.all([
+      t.get(winnerRef),
+      t.get(rosterRef),
+    ]);
+    if (!winnerSnap.exists) throw new HttpsError("not-found", "Participant not found");
+    const winnerData = winnerSnap.data()!;
+
+    const updatedRosterCount = { ...(winnerData.rosterCount || {}) };
+    updatedRosterCount[primaryRole] = Math.max(0, (updatedRosterCount[primaryRole] || 0) - 1);
+
+    const winnerUpdates: Record<string, any> = {
+      budgetResiduo: winnerData.budgetResiduo + price,
+      rosterCount: updatedRosterCount,
+    };
+
+    // Se il calciatore rimosso era designato under, ripristina i contatori
+    const wasUnder = rosterDocSnap.exists && rosterDocSnap.data()!.isUnder === true;
+    if (wasUnder) {
+      winnerUpdates.underCount = Math.max(0, (winnerData.underCount || 0) - 1);
+      if (sessionData.format === "classic" && primaryRole) {
+        const underRoleFreed = winnerData.underRoleFreed || {};
+        winnerUpdates.underRoleFreed = {
+          ...underRoleFreed,
+          [primaryRole]: Math.max(0, (underRoleFreed[primaryRole] || 0) - 1),
+        };
+      }
+    }
+
+    t.update(playerRef, { status: "available", soldTo: null, soldPrice: null });
+    t.update(winnerRef, winnerUpdates);
+    t.delete(rosterRef);
+    t.delete(histRef);
+    t.update(stateRef, {
+      status: "idle",
+      playerId: "",
+      bidCount: 0,
+      round: 1,
+      tiebreakParticipants: null,
+      allBids: [],
+      winnerId: null,
+      winnerNickname: null,
+      price: null,
+      wasRandom: false,
+      lastAssignment: null,
+    });
+  });
+
+  logger.info(`Undo: ${winnerId} loses ${playerId}, ${price} cr restored`);
+  return { result: "undone" };
+});
+
+/**
+ * Designa (o rimuove la designazione) di un calciatore come under.
+ * Solo il banditore può farlo, solo su calciatori già assegnati.
+ * - underCount traccia il numero di slot under usati
+ * - underRoleFreed (solo Classic) traccia i ruoli liberati dalle designazioni under
+ */
+export const designateUnder = onCall({ invoker: "public" }, async (request) => {
+  const uid = validateAuth(request);
+  const { sessionId, participantId, playerId, isUnder } = request.data as {
+    sessionId: string;
+    participantId: string;
+    playerId: string;
+    isUnder: boolean;
+  };
+
+  const sessionData = await verifyBanditore(sessionId, uid);
+
+  if (!sessionData.underEnabled) {
+    throw new HttpsError("failed-precondition", "La meccanica under non è abilitata per questa sessione");
+  }
+
+  const underSlotsPerTeam: number = sessionData.underSlotsPerTeam || 0;
+  const totalRosterSize: number = sessionData.totalRosterSize || 25;
+  const format: string = sessionData.format || "classic";
+
+  const partRef   = db.doc(`sessions/${sessionId}/participants/${participantId}`);
+  const rosterRef = db.doc(`sessions/${sessionId}/participants/${participantId}/roster/${playerId}`);
+
+  await db.runTransaction(async (t) => {
+    const [partSnap, rosterSnap] = await Promise.all([t.get(partRef), t.get(rosterRef)]);
+
+    if (!partSnap.exists) throw new HttpsError("not-found", "Participant not found");
+    if (!rosterSnap.exists) throw new HttpsError("not-found", "Player not in roster");
+
+    const part = partSnap.data()!;
+    const rosterDoc = rosterSnap.data()!;
+    const primaryRole: string = rosterDoc.role;
+
+    const underCount: number = part.underCount || 0;
+    const underRoleFreed: Record<string, number> = part.underRoleFreed || {};
+    const rosterCount: Record<string, number> = part.rosterCount || {};
+
+    if (isUnder) {
+      // ── Designazione ────────────────────────────────────────────────
+      if (rosterDoc.isUnder === true) {
+        throw new HttpsError("failed-precondition", "Il calciatore è già designato under");
+      }
+      if (underCount >= underSlotsPerTeam) {
+        throw new HttpsError(
+          "failed-precondition",
+          `Slot under esauriti (${underCount}/${underSlotsPerTeam})`
+        );
+      }
+
+      const partUpdates: Record<string, any> = {
+        underCount: underCount + 1,
+      };
+      if (format === "classic") {
+        partUpdates.underRoleFreed = {
+          ...underRoleFreed,
+          [primaryRole]: (underRoleFreed[primaryRole] || 0) + 1,
+        };
+      }
+
+      t.update(partRef, partUpdates);
+      t.update(rosterRef, { isUnder: true });
+    } else {
+      // ── Rimozione designazione ───────────────────────────────────────
+      if (rosterDoc.isUnder !== true) {
+        throw new HttpsError("failed-precondition", "Il calciatore non è designato under");
+      }
+
+      // Verifica che la rosa non diventi invalida dopo la rimozione
+      const currentTotal = Object.values(rosterCount).reduce((a, b) => a + b, 0);
+      const newEffectiveTotalMax = totalRosterSize + underCount - 1;
+      if (currentTotal > newEffectiveTotalMax) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Impossibile rimuovere la designazione under: la rosa supererebbe il limite"
+        );
+      }
+
+      if (format === "classic") {
+        // Verifica che il ruolo non sfori dopo la rimozione dello slot liberato
+        const rosterLimits: Record<string, { max: number }> = part.rosterLimits || {};
+        const baseMax = rosterLimits[primaryRole]?.max ?? 99;
+        const currentRoleCount = rosterCount[primaryRole] || 0;
+        const newEffectiveRoleMax = baseMax + (underRoleFreed[primaryRole] || 0) - 1;
+        if (currentRoleCount > newEffectiveRoleMax) {
+          throw new HttpsError(
+            "failed-precondition",
+            `Impossibile rimuovere: slot ${primaryRole} sfora senza la designazione under`
+          );
+        }
+      }
+
+      const partUpdates: Record<string, any> = {
+        underCount: Math.max(0, underCount - 1),
+      };
+      if (format === "classic") {
+        partUpdates.underRoleFreed = {
+          ...underRoleFreed,
+          [primaryRole]: Math.max(0, (underRoleFreed[primaryRole] || 0) - 1),
+        };
+      }
+
+      t.update(partRef, partUpdates);
+      t.update(rosterRef, { isUnder: false });
+    }
+  });
+
+  logger.info(`Under designation: session=${sessionId} participant=${participantId} player=${playerId} isUnder=${isUnder}`);
+  return { result: isUnder ? "designated" : "removed" };
 });
 
 export { getInitialRosterCount, CLASSIC_ROLES, MANTRA_ROLES };

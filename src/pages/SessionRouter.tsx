@@ -10,6 +10,7 @@ import {
   getDefaultRosterLimits,
   saveSessionToStorage,
   clearSessionFromStorage,
+  loadSessionFromStorage,
 } from "../firebase";
 import { useAuth } from "../context/AuthContext";
 import Lobby from "./Lobby";
@@ -136,7 +137,12 @@ export default function SessionRouter() {
     if (!sessionData || !user || !sessionId) return;
 
     const isBanditore = sessionData.banditorId === user.uid;
-    const nickname = location.state?.nickname;
+    // location.state ha il nickname per join normali e recovery da Home.
+    // Come fallback, proviamo localStorage (stesso dispositivo, navigazione diretta).
+    const stored = loadSessionFromStorage();
+    const nickname =
+      location.state?.nickname ??
+      (!isBanditore && stored?.sessionId === sessionId ? stored?.nickname : undefined);
 
     if (!isBanditore && nickname) {
       const format = sessionData.format || "classic";

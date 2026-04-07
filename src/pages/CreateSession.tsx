@@ -41,6 +41,10 @@ export default function CreateSession() {
   // Mantra only: total roster size per team
   const [totalRosterSize, setTotalRosterSize] = useState(25);
 
+  // Under mechanic
+  const [underEnabled, setUnderEnabled] = useState(false);
+  const [underSlotsPerTeam, setUnderSlotsPerTeam] = useState(2);
+
   const handleFormatChange = (newFormat: "classic" | "mantra") => {
     setFormat(newFormat);
     setLimits(getDefaultRosterLimits(newFormat));
@@ -175,6 +179,8 @@ export default function CreateSession() {
         banditorId: user.uid,
         rosterLimits: effectiveLimits,
         totalRosterSize: format === "mantra" ? totalRosterSize : null,
+        underEnabled,
+        underSlotsPerTeam: underEnabled ? underSlotsPerTeam : 0,
         auctionMode,
         randomRole: auctionMode === "random-role" ? randomRole : null,
         randomQueue: [],
@@ -422,6 +428,51 @@ export default function CreateSession() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+        </div>
+
+        {/* Under mechanic */}
+        <div className="bg-[#0b0b1c] border border-[#111128] rounded-2xl p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-semibold flex items-center gap-2">
+                <span className="text-[#ffaa00]">U</span>
+                Meccanica Under
+              </h2>
+              <p className="text-xs text-[#5a5a90] mt-0.5">
+                Slot extra per giovani calciatori concordati dalla lega
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setUnderEnabled((v) => !v)}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                underEnabled ? "bg-[#ffaa00]" : "bg-[#2a2a48]"
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  underEnabled ? "translate-x-6" : "translate-x-1"
+                }`}
+              />
+            </button>
+          </div>
+          {underEnabled && (
+            <div className="mt-4 bg-[#111128] rounded-xl p-4">
+              <div className="font-bold text-[#ffaa00] mb-1">Slot under per squadra</div>
+              <div className="text-xs text-[#5a5a90] mb-2">
+                Numero di calciatori che ogni squadra può designare come under.
+                Ogni under aggiunge uno slot extra alla rosa{format === "classic" ? " e libera uno slot di ruolo" : ""}.
+              </div>
+              <input
+                type="number"
+                value={underSlotsPerTeam}
+                onChange={(e) => setUnderSlotsPerTeam(Math.max(1, Number(e.target.value)))}
+                min={1}
+                max={10}
+                className="w-24 bg-[#0b0b1c] border border-[#ffaa00]/30 rounded-lg px-3 py-1.5 text-white text-center font-mono focus:outline-none focus:border-[#ffaa00]"
+              />
             </div>
           )}
         </div>

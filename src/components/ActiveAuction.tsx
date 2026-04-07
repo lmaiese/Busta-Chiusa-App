@@ -15,6 +15,7 @@ import {
   cancelAuctionFn,
   startAuctionFn,
   manualAssignFn,
+  undoLastAssignmentFn,
   parseMantraRoles,
   getPrimaryRole,
 } from "../firebase";
@@ -141,6 +142,7 @@ export default function ActiveAuction({
   const [myPassSent, setMyPassSent] = useState(false);
   const [loadingClose, setLoadingClose] = useState(false);
   const [loadingCancel, setLoadingCancel] = useState(false);
+  const [loadingUndo, setLoadingUndo] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [showManualAssign, setShowManualAssign] = useState(false);
   const [fnError, setFnError] = useState("");
@@ -283,8 +285,21 @@ export default function ActiveAuction({
     await updateDoc(doc(db, `sessions/${sessionId}/currentAuction/state`), {
       status: "idle", playerId: "", bidCount: 0, round: 1,
       tiebreakParticipants: null, allBids: [], winnerId: null,
-      winnerNickname: null, price: null, wasRandom: false,
+      winnerNickname: null, price: null, wasRandom: false, lastAssignment: null,
     });
+  };
+
+  const handleUndo = async () => {
+    if (!isBanditore || loadingUndo) return;
+    setLoadingUndo(true);
+    setFnError("");
+    try {
+      await undoLastAssignmentFn({ sessionId });
+    } catch (e: any) {
+      setFnError(e.message || "Errore annullamento assegnazione");
+    } finally {
+      setLoadingUndo(false);
+    }
   };
 
   const handleStartTiebreak = async () => {
@@ -669,9 +684,20 @@ export default function ActiveAuction({
             )}
 
             {isBanditore && (
-              <button onClick={handleNextPlayer} className="w-full bg-[#00e5ff] text-[#05050f] font-bold py-4 rounded-xl text-lg">
-                Prossimo calciatore
-              </button>
+              <div className="w-full space-y-2">
+                <button onClick={handleNextPlayer} className="w-full bg-[#00e5ff] text-[#05050f] font-bold py-4 rounded-xl text-lg">
+                  Prossimo calciatore
+                </button>
+                {currentAuction.winnerId && (
+                  <button
+                    onClick={handleUndo}
+                    disabled={loadingUndo}
+                    className="w-full py-2.5 rounded-xl text-sm font-medium border border-[#ff3d71]/30 text-[#ff3d71] hover:border-[#ff3d71]/60 hover:bg-[#ff3d71]/5 transition-colors disabled:opacity-40"
+                  >
+                    {loadingUndo ? "Annullamento..." : "Annulla assegnazione"}
+                  </button>
+                )}
+              </div>
             )}
             {!isBanditore && (
               <p className="text-[#5a5a90] text-center text-sm">In attesa del prossimo calciatore...</p>

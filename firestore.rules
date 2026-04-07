@@ -28,10 +28,16 @@ service cloud.firestore {
 
       // Participants
       match /participants/{uid} {
-        allow list: if isAuth();
+        allow list: if isSessionMember(sid);
         allow get: if isSessionMember(sid);
         allow create: if isAuth() && request.auth.uid == uid;
-        allow update: if isAuth() && (request.auth.uid == uid || isBanditore(sid));
+        allow update: if isAuth() && (
+          // Il partecipante può aggiornare solo il proprio campo isConnected
+          (request.auth.uid == uid &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isConnected'])) ||
+          // Il banditore può aggiornare qualsiasi campo del partecipante
+          isBanditore(sid)
+        );
         allow delete: if isBanditore(sid);
 
         // Roster
@@ -43,39 +49,40 @@ service cloud.firestore {
 
       // Players (listone)
       match /players/{playerId} {
-        allow read: if isAuth();
+        allow read: if isSessionMember(sid);
         allow create: if isBanditore(sid);
         allow update, delete: if false;
       }
 
       // Current Auction
       match /currentAuction/state {
-        allow read: if isAuth();
+        allow read: if isSessionMember(sid);
         allow create: if isBanditore(sid);
-        allow update: if isBanditore(sid) || (
-          isAuth() &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['bidCount']) &&
-          request.resource.data.bidCount is int &&
-          request.resource.data.bidCount == resource.data.bidCount + 1
-        );
+        allow update: if isBanditore(sid);
         allow delete: if false;
 
         // Bids: secret — Cloud Functions read via Admin SDK
         match /bids/{uid} {
-          allow create, update: if isAuth() &&
+          allow create: if isAuth() &&
             request.auth.uid == uid &&
             request.resource.data.keys().hasAll(['amount', 'submittedAt', 'round']) &&
             request.resource.data.amount is int &&
             request.resource.data.amount >= 1;
+          allow update: if isAuth() &&
+            request.auth.uid == uid &&
+            request.resource.data.keys().hasAll(['amount', 'submittedAt', 'round']) &&
+            request.resource.data.amount is int &&
+            request.resource.data.amount >= 1 &&
+            request.time > resource.data.submittedAt + duration.value(2, 's');
           allow read: if false;
           allow delete: if isAuth() && request.auth.uid == uid;
         }
 
-        // Passes: public within session — anyone can see who passed
+        // Passes: visible to session members only, writable only by session members
         match /passes/{uid} {
-          allow read: if isAuth();
-          allow create, update: if isAuth() && request.auth.uid == uid;
-          allow delete: if isAuth() && request.auth.uid == uid;
+          allow read: if isSessionMember(sid);
+          allow create, update: if isSessionMember(sid) && request.auth.uid == uid;
+          allow delete: if isSessionMember(sid) && request.auth.uid == uid;
         }
       }
 
