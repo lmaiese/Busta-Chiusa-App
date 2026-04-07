@@ -1,13 +1,33 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { collection, onSnapshot } from "firebase/firestore";
 import { db, startAuctionFn, parseMantraRoles } from "../firebase";
 import { useSession } from "../pages/SessionRouter";
 import { Search, Play, Loader } from "lucide-react";
 
+// Seeded PRNG (mulberry32)
+function mulberry32(seed: number) {
+  return function () {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = t + Math.imul(t ^ (t >>> 7), 61 | t) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function seededShuffle<T>(arr: T[], seed: number): T[] {
+  const result = [...arr];
+  const rand = mulberry32(seed);
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
 type SortMode = "fvm" | "role" | "nome" | "random";
 
 export default function PlayerList({ isBanditore }: { isBanditore: boolean }) {
-  const { sessionId, sessionData } = useSession();
+  const { sessionId, sessionData, participantId } = useSession();
   const [players, setPlayers] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterRole, setFilterRole] = useState<string>("ALL");
@@ -45,10 +65,18 @@ export default function PlayerList({ isBanditore }: { isBanditore: boolean }) {
   const matchesRole = (p: any) => {
     if (filterRole === "ALL") return true;
     if (format === "classic") return p.r === filterRole;
-    return parseMantraRoles(p.rm || "").includes(filterRole);
+    // mantra: check parsed roles, fall back to classic role if rm is empty
+    const mantraRoles = parseMantraRoles(p.rm || "");
+    return mantraRoles.length > 0 ? mantraRoles.includes(filterRole) : p.r === filterRole;
   };
 
-  const filteredPlayers = players
+  // Stable random shuffle derived from shuffleSeed — recomputed only when players or seed changes
+  const shuffledPlayers = useMemo(() => {
+    const seed = Math.floor((sessionData.shuffleSeed || 0.5) * 2 ** 32);
+    return seededShuffle(players, seed);
+  }, [players, sessionData.shuffleSeed]);
+
+  const filteredPlayers = (sortMode === "random" ? shuffledPlayers : players)
     .filter((p) => {
       const term = searchTerm.toLowerCase();
       const matchesSearch =
@@ -60,11 +88,11 @@ export default function PlayerList({ isBanditore }: { isBanditore: boolean }) {
       if (sortMode === "fvm") return (b.fvm || 0) - (a.fvm || 0);
       if (sortMode === "nome") return (a.nome || "").localeCompare(b.nome || "");
       if (sortMode === "role") {
-        const ra = format === "classic" ? a.r : parseMantraRoles(a.rm || "")[0] || "";
-        const rb = format === "classic" ? b.r : parseMantraRoles(b.rm || "")[0] || "";
+        const ra = format === "classic" ? a.r : parseMantraRoles(a.rm || "")[0] || a.r || "";
+        const rb = format === "classic" ? b.r : parseMantraRoles(b.rm || "")[0] || b.r || "";
         return ra.localeCompare(rb);
       }
-      return 0; // random: keep original order
+      return 0; // random: already shuffled above
     });
 
   const getRoleColor = (role: string) => {
@@ -162,15 +190,19 @@ export default function PlayerList({ isBanditore }: { isBanditore: boolean }) {
       <div className="space-y-2">
         {filteredPlayers.map((p) => {
           const isSold = p.status === "sold";
+          const isSoldToMe = isSold && p.soldTo === participantId;
+          const isSoldToOthers = isSold && !isSoldToMe;
           const isStarting = starting === p.id;
 
           return (
             <div
               key={p.id}
-              className={`bg-[#0b0b1c] border rounded-xl px-4 py-3 flex items-center justify-between gap-3 transition-colors ${
-                isSold
-                  ? "border-[#111128] opacity-40"
-                  : "border-[#111128] hover:border-[#00e5ff]/30"
+              className={`border rounded-xl px-4 py-3 flex items-center justify-between gap-3 transition-colors ${
+                isSoldToMe
+                  ? "bg-[#00e5ff]/5 border-[#00e5ff]/20"
+                  : isSoldToOthers
+                  ? "bg-[#0b0b1c] border-[#111128] opacity-40"
+                  : "bg-[#0b0b1c] border-[#111128] hover:border-[#00e5ff]/30"
               }`}
             >
               <div className="flex items-center gap-3 min-w-0">
@@ -192,8 +224,12 @@ export default function PlayerList({ isBanditore }: { isBanditore: boolean }) {
               <div className="shrink-0">
                 {isSold ? (
                   <div className="text-right">
-                    <div className="text-xs text-[#5a5a90]">Venduto</div>
-                    <div className="font-mono font-bold text-[#ff3d71] text-sm">{p.soldPrice} cr</div>
+                    <div className={`text-xs ${isSoldToMe ? "text-[#00e5ff]" : "text-[#5a5a90]"}`}>
+                      {isSoldToMe ? "Tuo" : "Venduto"}
+                    </div>
+                    <div className={`font-mono font-bold text-sm ${isSoldToMe ? "text-[#00e5ff]" : "text-[#ff3d71]"}`}>
+                      {p.soldPrice} cr
+                    </div>
                   </div>
                 ) : isBanditore ? (
                   <button

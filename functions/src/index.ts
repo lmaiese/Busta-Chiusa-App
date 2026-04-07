@@ -194,27 +194,23 @@ async function processAssignment(params: {
 export const onBidWritten = onDocumentWritten(
   "sessions/{sessionId}/currentAuction/state/bids/{uid}",
   async (event) => {
-    // Interessa solo il CREATE: before non esiste, after esiste
-    const wasCreated =
-      !event.data?.before.exists && event.data?.after.exists;
+    const wasCreated = !event.data?.before.exists && event.data?.after.exists;
+    const wasDeleted = event.data?.before.exists && !event.data?.after.exists;
 
-    if (!wasCreated) return;
+    if (!wasCreated && !wasDeleted) return;
 
     const { sessionId } = event.params;
-    const stateRef = db.doc(
-      `sessions/${sessionId}/currentAuction/state`
-    );
+    const stateRef = db.doc(`sessions/${sessionId}/currentAuction/state`);
 
     try {
       await stateRef.update({
-        bidCount: FieldValue.increment(1),
+        bidCount: FieldValue.increment(wasCreated ? 1 : -1),
       });
       logger.info(
-        `bidCount incremented for session=${sessionId} uid=${event.params.uid}`
+        `bidCount ${wasCreated ? "incremented" : "decremented"} for session=${sessionId} uid=${event.params.uid}`
       );
     } catch (err) {
-      // Non fatale: lo stato potrebbe essere già 'closing' o 'revealed'
-      logger.warn(`onBidWritten: could not increment bidCount`, err);
+      logger.warn(`onBidWritten: could not update bidCount`, err);
     }
   }
 );
@@ -227,7 +223,7 @@ export const onBidWritten = onDocumentWritten(
  * Avvia (o riavvia per tiebreak) una busta.
  * Scrive timerEnd server-side per accuratezza cross-device.
  */
-export const startAuction = onCall(async (request) => {
+export const startAuction = onCall({ invoker: "public" }, async (request) => {
   const uid = validateAuth(request);
   const {
     sessionId,
@@ -252,13 +248,15 @@ export const startAuction = onCall(async (request) => {
     throw new HttpsError("failed-precondition", "Player is already sold");
   }
 
-  // Elimina tutte le bid del round precedente
-  const bidsSnap = await db
-    .collection(`sessions/${sessionId}/currentAuction/state/bids`)
-    .get();
-  if (!bidsSnap.empty) {
+  // Elimina tutte le bid e i pass del round precedente
+  const [bidsSnap, passesSnap] = await Promise.all([
+    db.collection(`sessions/${sessionId}/currentAuction/state/bids`).get(),
+    db.collection(`sessions/${sessionId}/currentAuction/state/passes`).get(),
+  ]);
+  if (!bidsSnap.empty || !passesSnap.empty) {
     const delBatch = db.batch();
     bidsSnap.docs.forEach((d) => delBatch.delete(d.ref));
+    passesSnap.docs.forEach((d) => delBatch.delete(d.ref));
     await delBatch.commit();
   }
 
@@ -295,7 +293,7 @@ export const startAuction = onCall(async (request) => {
  * Legge le bid via Admin SDK (invisibili ai client).
  * Gestisce tiebreak e sorteggio R3.
  */
-export const closeAuction = onCall(async (request) => {
+export const closeAuction = onCall({ invoker: "public" }, async (request) => {
   const uid = validateAuth(request);
   const { sessionId } = request.data as { sessionId: string };
 
@@ -329,127 +327,133 @@ export const closeAuction = onCall(async (request) => {
     tiebreakParticipants: string[] | null;
   };
 
-  const playerSnap = await db.doc(`sessions/${sessionId}/players/${playerId}`).get();
-  if (!playerSnap.exists) {
-    await cancelCurrentAuction(sessionId, playerId, "Sconosciuto", stateRef);
-    return { result: "cancelled", reason: "player_not_found" };
-  }
-  const player = playerSnap.data()!;
-  const format = sessionData.format as string;
-  const primaryRole = getPrimaryRole(player, format);
+  try {
+    const playerSnap = await db.doc(`sessions/${sessionId}/players/${playerId}`).get();
+    if (!playerSnap.exists) {
+      await cancelCurrentAuction(sessionId, playerId, "Sconosciuto", stateRef);
+      return { result: "cancelled", reason: "player_not_found" };
+    }
+    const player = playerSnap.data()!;
+    const format = sessionData.format as string;
+    const primaryRole = getPrimaryRole(player, format);
 
-  // Legge tutte le bid via Admin SDK (bypassa le security rules)
-  const bidsSnap = await db
-    .collection(`sessions/${sessionId}/currentAuction/state/bids`)
-    .get();
-  let bids = bidsSnap.docs.map((d) => ({ uid: d.id, ...(d.data() as { amount: number }) }));
-
-  // Filtra per partecipanti al tiebreak se applicabile
-  if (round > 1 && tiebreakParticipants && tiebreakParticipants.length > 0) {
-    bids = bids.filter((b) => tiebreakParticipants.includes(b.uid));
-  }
-
-  if (bids.length === 0) {
-    await cancelCurrentAuction(sessionId, playerId, player.nome, stateRef);
-    return { result: "cancelled", reason: "no_bids" };
-  }
-
-  // Valida ogni bid: budget e slot rosa
-  const totalRosterSize: number = (sessionData.totalRosterSize as number) || 25;
-  const validatedBids: { uid: string; nickname: string; amount: number }[] = [];
-  for (const bid of bids) {
-    const partSnap = await db
-      .doc(`sessions/${sessionId}/participants/${bid.uid}`)
+    // Legge tutte le bid via Admin SDK (bypassa le security rules)
+    const bidsSnap = await db
+      .collection(`sessions/${sessionId}/currentAuction/state/bids`)
       .get();
-    if (!partSnap.exists) continue;
-    const part = partSnap.data()!;
+    let bids = bidsSnap.docs.map((d) => ({ uid: d.id, ...(d.data() as { amount: number }) }));
 
-    if (bid.amount < 1 || bid.amount > part.budgetResiduo) continue;
+    // Filtra per partecipanti al tiebreak se applicabile
+    if (round > 1 && tiebreakParticipants && tiebreakParticipants.length > 0) {
+      bids = bids.filter((b) => tiebreakParticipants.includes(b.uid));
+    }
 
-    const rosterCount: Record<string, number> = part.rosterCount || {};
-    const rosterLimits: Record<string, { max: number }> = part.rosterLimits || {};
+    if (bids.length === 0) {
+      await cancelCurrentAuction(sessionId, playerId, player.nome, stateRef);
+      return { result: "cancelled", reason: "no_bids" };
+    }
 
-    // Check rosa completa
-    const currentTotal = Object.values(rosterCount).reduce((a, b) => a + b, 0);
-    if (currentTotal >= totalRosterSize) continue;
+    // Valida ogni bid: budget e slot rosa
+    const totalRosterSize: number = (sessionData.totalRosterSize as number) || 25;
+    const validatedBids: { uid: string; nickname: string; amount: number }[] = [];
+    for (const bid of bids) {
+      const partSnap = await db
+        .doc(`sessions/${sessionId}/participants/${bid.uid}`)
+        .get();
+      if (!partSnap.exists) continue;
+      const part = partSnap.data()!;
 
-    if (format === "classic") {
-      const current = rosterCount[primaryRole] || 0;
-      const max = rosterLimits[primaryRole]?.max ?? 99;
-      if (current >= max) continue;
-    } else {
-      // Mantra: solo Por ha un vincolo di ruolo
-      if (primaryRole === "Por") {
-        const current = rosterCount["Por"] || 0;
-        const max = rosterLimits["Por"]?.max ?? 3;
+      if (bid.amount < 1 || bid.amount > part.budgetResiduo) continue;
+
+      const rosterCount: Record<string, number> = part.rosterCount || {};
+      const rosterLimits: Record<string, { max: number }> = part.rosterLimits || {};
+
+      // Check rosa completa
+      const currentTotal = Object.values(rosterCount).reduce((a, b) => a + b, 0);
+      if (currentTotal >= totalRosterSize) continue;
+
+      if (format === "classic") {
+        const current = rosterCount[primaryRole] || 0;
+        const max = rosterLimits[primaryRole]?.max ?? 99;
         if (current >= max) continue;
+      } else {
+        // Mantra: solo Por ha un vincolo di ruolo
+        if (primaryRole === "Por") {
+          const current = rosterCount["Por"] || 0;
+          const max = rosterLimits["Por"]?.max ?? 3;
+          if (current >= max) continue;
+        }
+      }
+
+      validatedBids.push({ uid: bid.uid, nickname: part.nickname, amount: bid.amount });
+    }
+
+    if (validatedBids.length === 0) {
+      await cancelCurrentAuction(sessionId, playerId, player.nome, stateRef);
+      return { result: "cancelled", reason: "no_valid_bids" };
+    }
+
+    validatedBids.sort((a, b) => b.amount - a.amount);
+    const maxAmount = validatedBids[0].amount;
+    const winners = validatedBids.filter((b) => b.amount === maxAmount);
+
+    const allBidsForHistory = validatedBids.map((b) => ({
+      uid: b.uid,
+      nickname: b.nickname,
+      amount: b.amount,
+    }));
+
+    if (winners.length > 1) {
+      if (round < 3) {
+        // Tiebreak: nuova busta solo per i pareggianti
+        await stateRef.update({
+          status: "tiebreak",
+          tiebreakParticipants: winners.map((w) => w.uid),
+          allBids: allBidsForHistory,
+        });
+        logger.info(`Tiebreak round ${round}: session=${sessionId}`);
+        return {
+          result: "tiebreak",
+          round,
+          tiebreakNicknames: winners.map((w) => w.nickname),
+        };
+      } else {
+        // R3: sorteggio casuale server-side, prezzo = maxAmount + 1
+        const winner = winners[Math.floor(Math.random() * winners.length)];
+        const finalPrice = maxAmount + 1;
+        await processAssignment({
+          sessionId, playerId, player,
+          winnerId: winner.uid, winnerNickname: winner.nickname,
+          price: finalPrice, wasRandom: true,
+          allBids: allBidsForHistory, rounds: round,
+          stateRef, format,
+        });
+        logger.info(`R3 random: ${winner.nickname} gets ${player.nome} for ${finalPrice}`);
+        return { result: "sold_random", winner: winner.nickname, price: finalPrice };
       }
     }
 
-    validatedBids.push({ uid: bid.uid, nickname: part.nickname, amount: bid.amount });
+    const winner = winners[0];
+    await processAssignment({
+      sessionId, playerId, player,
+      winnerId: winner.uid, winnerNickname: winner.nickname,
+      price: winner.amount, wasRandom: false,
+      allBids: allBidsForHistory, rounds: round,
+      stateRef, format,
+    });
+    logger.info(`Sold: ${winner.nickname} gets ${player.nome} for ${winner.amount}`);
+    return { result: "sold", winner: winner.nickname, price: winner.amount };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.error(`closeAuction post-transaction error: session=${sessionId} playerId=${playerId}`, e);
+    throw new HttpsError("internal", `Errore elaborazione: ${msg}`);
   }
-
-  if (validatedBids.length === 0) {
-    await cancelCurrentAuction(sessionId, playerId, player.nome, stateRef);
-    return { result: "cancelled", reason: "no_valid_bids" };
-  }
-
-  validatedBids.sort((a, b) => b.amount - a.amount);
-  const maxAmount = validatedBids[0].amount;
-  const winners = validatedBids.filter((b) => b.amount === maxAmount);
-
-  const allBidsForHistory = validatedBids.map((b) => ({
-    uid: b.uid,
-    nickname: b.nickname,
-    amount: b.amount,
-  }));
-
-  if (winners.length > 1) {
-    if (round < 3) {
-      // Tiebreak: nuova busta solo per i pareggianti
-      await stateRef.update({
-        status: "tiebreak",
-        tiebreakParticipants: winners.map((w) => w.uid),
-        allBids: allBidsForHistory,
-      });
-      logger.info(`Tiebreak round ${round}: session=${sessionId}`);
-      return {
-        result: "tiebreak",
-        round,
-        tiebreakNicknames: winners.map((w) => w.nickname),
-      };
-    } else {
-      // R3: sorteggio casuale server-side, prezzo = maxAmount + 1
-      const winner = winners[Math.floor(Math.random() * winners.length)];
-      const finalPrice = maxAmount + 1;
-      await processAssignment({
-        sessionId, playerId, player,
-        winnerId: winner.uid, winnerNickname: winner.nickname,
-        price: finalPrice, wasRandom: true,
-        allBids: allBidsForHistory, rounds: round,
-        stateRef, format,
-      });
-      logger.info(`R3 random: ${winner.nickname} gets ${player.nome} for ${finalPrice}`);
-      return { result: "sold_random", winner: winner.nickname, price: finalPrice };
-    }
-  }
-
-  const winner = winners[0];
-  await processAssignment({
-    sessionId, playerId, player,
-    winnerId: winner.uid, winnerNickname: winner.nickname,
-    price: winner.amount, wasRandom: false,
-    allBids: allBidsForHistory, rounds: round,
-    stateRef, format,
-  });
-  logger.info(`Sold: ${winner.nickname} gets ${player.nome} for ${winner.amount}`);
-  return { result: "sold", winner: winner.nickname, price: winner.amount };
 });
 
 /**
  * Annulla la busta corrente. Il calciatore torna disponibile.
  */
-export const cancelAuction = onCall(async (request) => {
+export const cancelAuction = onCall({ invoker: "public" }, async (request) => {
   const uid = validateAuth(request);
   const { sessionId } = request.data as { sessionId: string };
 
@@ -477,7 +481,7 @@ export const cancelAuction = onCall(async (request) => {
  * Assegnazione manuale da parte del banditore.
  * Bypassa il flusso d'asta — prezzo libero.
  */
-export const manualAssign = onCall(async (request) => {
+export const manualAssign = onCall({ invoker: "public" }, async (request) => {
   const uid = validateAuth(request);
   const { sessionId, playerId, participantId, price } = request.data as {
     sessionId: string;

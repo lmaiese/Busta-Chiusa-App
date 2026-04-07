@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { collection, onSnapshot, getDocs } from "firebase/firestore";
 import { db } from "../firebase";
 import { useSession } from "./SessionRouter";
-import { Download, Trophy } from "lucide-react";
+import { Download, Trophy, Plus, LogIn } from "lucide-react";
 
 interface RosterPlayer {
   id: string;
@@ -24,6 +25,7 @@ interface ParticipantSummary {
 
 export default function AuctionSummary() {
   const { sessionId, isBanditore, sessionData } = useSession();
+  const navigate = useNavigate();
   const [participants, setParticipants] = useState<ParticipantSummary[]>([]);
   const [exporting, setExporting] = useState(false);
 
@@ -112,16 +114,35 @@ export default function AuctionSummary() {
             {sessionData.code} · {sessionData.format} · {sessionData.budget} cr
           </div>
         </div>
-        {isBanditore && (
-          <button
-            onClick={handleExportCSV}
-            disabled={exporting}
-            className="bg-[#00e5ff] hover:bg-[#00e5ff]/90 text-[#05050f] font-bold py-2.5 px-4 rounded-xl flex items-center gap-2 transition-colors disabled:opacity-50 text-sm"
-          >
-            <Download size={16} />
-            {exporting ? "Esportazione..." : "Esporta rose CSV"}
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {isBanditore ? (
+            <>
+              <button
+                onClick={handleExportCSV}
+                disabled={exporting}
+                className="bg-[#111128] hover:bg-[#1a1a38] text-white font-bold py-2.5 px-4 rounded-xl flex items-center gap-2 transition-colors disabled:opacity-50 text-sm border border-[#5a5a90]/30"
+              >
+                <Download size={16} />
+                {exporting ? "Esportazione..." : "Esporta CSV"}
+              </button>
+              <button
+                onClick={() => navigate("/create")}
+                className="bg-[#00e5ff] hover:bg-[#00e5ff]/90 text-[#05050f] font-bold py-2.5 px-4 rounded-xl flex items-center gap-2 transition-colors text-sm"
+              >
+                <Plus size={16} />
+                Nuova sessione
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => navigate("/")}
+              className="bg-[#00e5ff] hover:bg-[#00e5ff]/90 text-[#05050f] font-bold py-2.5 px-4 rounded-xl flex items-center gap-2 transition-colors text-sm"
+            >
+              <LogIn size={16} />
+              Partecipa a una nuova sessione
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="max-w-5xl mx-auto p-4 space-y-6">

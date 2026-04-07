@@ -2,7 +2,6 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helpers
     function isAuth() {
       return request.auth != null;
     }
@@ -29,8 +28,6 @@ service cloud.firestore {
 
       // Participants
       match /participants/{uid} {
-        // list uses isAuth() to avoid evaluation errors caused by get() inside isBanditore
-        // during collection queries. Sessions are already private by join code.
         allow list: if isAuth();
         allow get: if isSessionMember(sid);
         allow create: if isAuth() && request.auth.uid == uid;
@@ -71,7 +68,14 @@ service cloud.firestore {
             request.resource.data.amount is int &&
             request.resource.data.amount >= 1;
           allow read: if false;
-          allow delete: if false;
+          allow delete: if isAuth() && request.auth.uid == uid;
+        }
+
+        // Passes: public within session — anyone can see who passed
+        match /passes/{uid} {
+          allow read: if isAuth();
+          allow create, update: if isAuth() && request.auth.uid == uid;
+          allow delete: if isAuth() && request.auth.uid == uid;
         }
       }
 

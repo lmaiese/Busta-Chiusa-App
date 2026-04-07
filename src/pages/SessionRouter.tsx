@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { useParams, useLocation, useNavigate, Routes, Route } from "react-router-dom";
-import { doc, onSnapshot, setDoc, serverTimestamp } from "firebase/firestore";
+import { doc, onSnapshot, setDoc, updateDoc, serverTimestamp } from "firebase/firestore";
 import {
   auth,
   db,
@@ -8,11 +8,14 @@ import {
   OperationType,
   getInitialRosterCount,
   getDefaultRosterLimits,
+  saveSessionToStorage,
+  clearSessionFromStorage,
 } from "../firebase";
 import { useAuth } from "../context/AuthContext";
 import Lobby from "./Lobby";
 import Auction from "./Auction";
 import AuctionSummary from "./AuctionSummary";
+import TvMode from "./TvMode";
 
 interface SessionContextType {
   sessionId: string;
@@ -55,13 +58,6 @@ export default function SessionRouter() {
         }
       },
       (err) => {
-        if (
-          err.message?.includes("Missing or insufficient permissions") &&
-          user.isAnonymous
-        ) {
-          auth.signOut().then(() => navigate("/"));
-          return;
-        }
         try {
           handleFirestoreError(err, OperationType.GET, `sessions/${sessionId}`);
         } catch (e: any) {
@@ -83,10 +79,57 @@ export default function SessionRouter() {
   useEffect(() => {
     if (!sessionData || !sessionId) return;
     if (sessionData.status !== "completed") return;
-    // Evita loop se siamo già sulla pagina summary
     if (location.pathname.endsWith("/summary")) return;
     navigate(`/session/${sessionId}/summary`, { replace: true });
   }, [sessionData?.status, sessionId, navigate, location.pathname]);
+
+  // ── Salva sessione su localStorage e aggiorna isConnected ───────────
+  useEffect(() => {
+    if (!sessionData || !user || !sessionId) return;
+
+    const isBanditore = sessionData.banditorId === user.uid;
+    const nickname = location.state?.nickname;
+
+    // Save to localStorage for session recovery
+    saveSessionToStorage({
+      sessionId,
+      sessionName: sessionData.sessionName || sessionData.code || "Sessione",
+      nickname: isBanditore ? undefined : nickname,
+      role: isBanditore ? "banditore" : "participant",
+    });
+
+    // Clear from storage when session completes
+    if (sessionData.status === "completed") {
+      clearSessionFromStorage();
+    }
+  }, [sessionData, user, sessionId, location.state]);
+
+  // ── Gestione presenza: isConnected ──────────────────────────────────
+  useEffect(() => {
+    if (!sessionData || !user || !sessionId) return;
+    const isBanditore = sessionData.banditorId === user.uid;
+    if (isBanditore) return; // il banditore non è un partecipante
+
+    const participantRef = doc(db, `sessions/${sessionId}/participants/${user.uid}`);
+
+    const setConnected = (value: boolean) => {
+      updateDoc(participantRef, { isConnected: value }).catch(() => {});
+    };
+
+    setConnected(true);
+
+    const handleVisibility = () => setConnected(!document.hidden);
+    const handleUnload = () => setConnected(false);
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("beforeunload", handleUnload);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("beforeunload", handleUnload);
+      setConnected(false);
+    };
+  }, [sessionData?.banditorId, user?.uid, sessionId]);
 
   // ── Registra il partecipante al primo accesso ────────────────────────
   useEffect(() => {
@@ -137,9 +180,7 @@ export default function SessionRouter() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-[#5a5a90] animate-pulse">
-          Caricamento sessione...
-        </div>
+        <div className="text-[#5a5a90] animate-pulse">Caricamento sessione...</div>
       </div>
     );
   }
@@ -169,6 +210,7 @@ export default function SessionRouter() {
         <Route path="/" element={<Lobby />} />
         <Route path="/auction" element={<Auction />} />
         <Route path="/summary" element={<AuctionSummary />} />
+        <Route path="/tv" element={<TvMode />} />
       </Routes>
     </SessionContext.Provider>
   );

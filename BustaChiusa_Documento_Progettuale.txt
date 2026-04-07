@@ -1,7 +1,7 @@
 ================================================================================
 BUSTA CHIUSA
 App per aste di fantacalcio a offerta silenziosa
-Documento Progettuale Completo — Versione 1.2 — Aprile 2026
+Documento Progettuale Completo — Versione 1.3 — Aprile 2026
 ================================================================================
 
 
@@ -43,7 +43,8 @@ BANDITORE
 
 PARTECIPANTE
   Responsabilità : Entra con codice sessione, sceglie nickname, fa offerte
-  Autenticazione : Firebase Anonymous Auth — nessuna registrazione richiesta
+  Autenticazione : Google, Apple o Microsoft Sign-In — account persistente
+                   (accesso anonimo rimosso per garantire recupero sessione)
 
 2.2 Meccanica d'asta — flusso per ogni calciatore
 ──────────────────────────────────────────────────
@@ -127,11 +128,40 @@ al rientro, quando rileva timerEnd già passato).
   • Rose      — rose di tutti i partecipanti in tempo reale con budget
   • Storico   — lista cronologica buste, espandibile per vedere tutte le offerte
 
-2.10 Notifiche
-──────────────
+2.10 Notifiche sonore e vibrazione
+───────────────────────────────────
 Nessuna notifica push. Quando si apre una nuova busta, la tab "Busta"
-mostra un pallino rosso pulsante. Suoni/vibrazione da implementare
-(richiede gesto preventivo utente per Web Audio API).
+mostra un pallino rosso pulsante. Ogni volta che si apre una busta viene
+suonata una campanella (Web Audio API, due oscillatori con exponential
+ramp) e vibrazione del dispositivo (navigator.vibrate, se disponibile).
+Ogni utente può disabilitare suoni/vibrazione tramite icona campanella
+nell'header (preferenza salvata in localStorage, persistente tra sessioni).
+Il banditore riceve un suono anche quando tutti i partecipanti hanno
+effettuato la loro scelta (offerta o "non partecipo").
+
+2.11 Tasto "Non partecipo"
+───────────────────────────
+Durante la busta, i partecipanti possono premere "Non partecipo" per
+segnalare che non intendono offrire per il calciatore corrente.
+  • Struttura dati: subcollection `currentAuction/state/passes/{uid}`
+    (parallela a bids, leggibile da tutti, scrivibile/cancellabile solo
+    dall'owner tramite Security Rules)
+  • Contatore visibile a tutti: "X offerte · Y non partecipo · Z in attesa"
+  • Il banditore riceve un suono quando tutti hanno scelto (bid + pass ≥
+    totale partecipanti)
+  • Il tasto è disabilitato se è già stata inviata un'offerta; inviare
+    un'offerta mentre si è "non partecipo" cancella automaticamente il pass
+  • Al riavvio di una nuova busta (startAuction), i pass vengono eliminati
+    insieme alle bid (batch delete nella Cloud Function)
+
+2.12 Recupero sessione
+───────────────────────
+L'ultima sessione attiva viene salvata in localStorage (chiave
+`bustachiusa_session`) con: sessionId, sessionName, nickname (se
+partecipante), role. Al prossimo accesso all'app, se la sessione è ancora
+attiva su Firestore (status ≠ 'completed'), viene mostrato un banner di
+recupero in cima alla home. Il localStorage viene svuotato al termine
+della sessione (status 'completed').
 
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -299,8 +329,11 @@ sessione è un documento Firestore con il proprio albero di subcollection.
   budget          number      Crediti iniziali per partecipante
   timerDuration   number      Secondi per ogni busta (default 30)
   code            string      Codice accesso 6 caratteri uppercase
+  sessionName     string      Nome della sessione (es. "Asta 2025 Lega Nord")
   banditorId      string      Firebase UID del banditore
   rosterLimits    map         {ruolo: {min, max}} configurato dal banditore
+  shuffleSeed     number      Seme [0,1) generato alla creazione per
+                              ordinamento casuale stabile del listone
   createdAt       timestamp   Server timestamp di creazione
 
 6.2  …/participants/{uid}
@@ -310,7 +343,8 @@ sessione è un documento Firestore con il proprio albero di subcollection.
   rosterCount     map         {ruolo: count} — es. {P:2, D:5, C:7, A:3}
                               Per Mantra: tutti e 12 i ruoli inizializzati a 0
   rosterLimits    map         Copia dei limiti della sessione (per validazione CF)
-  isConnected     boolean     Stato connessione (heartbeat non implementato)
+  isConnected     boolean     Stato connessione (aggiornato via
+                              visibilitychange + beforeunload client-side)
   joinedAt        timestamp   Timestamp di ingresso
 
 6.3  …/participants/{uid}/roster/{csvId}
@@ -358,9 +392,20 @@ Scritta dalla Cloud Function dopo ogni assegnazione.
 ───────────────────────────────────────
   allow read: if false  ←  COMPLETAMENTE SEGRETO AI CLIENT
   Solo Admin SDK (Cloud Function) può leggere.
+  allow delete: uid == request.auth.uid  (cancel bid)
 
   amount          number      Importo offerto (≥1, ≤budgetResiduo)
   submittedAt     timestamp   Timestamp ultima modifica
+  round           number      Round di riferimento
+
+6.6b …/currentAuction/state/passes/{uid}
+──────────────────────────────────────────
+  Parallel to bids, written when participant chooses "Non partecipo".
+  allow read: isAuth()         — visibile a tutti
+  allow create/update: uid == request.auth.uid
+  allow delete: uid == request.auth.uid
+
+  passedAt        timestamp   Timestamp della scelta
   round           number      Round di riferimento
 
 6.7  …/auctionHistory/{autoId}  (append-only)
@@ -586,29 +631,23 @@ Non ancora definito. Concetti: busta, blind, reveal, silenzio, asta cieca.
 Solo italiano per il lancio. Flutter (futura versione) supporta i18n nativo.
 
 12.4  Heartbeat connessione partecipanti
-isConnected viene scritto a true al join ma non aggiornato. Da implementare
-con Firebase Realtime Database onDisconnect() o heartbeat scheduled.
+isConnected viene aggiornato client-side via visibilitychange e beforeunload.
+Non è infallibile (es. crash del browser) ma è sufficiente per mostrare lo
+stato di connessione nella lista partecipanti. Un approccio più robusto
+richiederebbe Firebase Realtime Database onDisconnect() — da valutare per V2.
 
-12.5  bidCount server-side
-Attualmente increment(1) client-side — race condition non critica.
-Da spostare in Cloud Function trigger su scrittura bids/{uid}.
-
-12.6  Schermata riepilogo finale
-Da implementare: AuctionSummary.tsx + route /session/:id/summary.
-Accessibile al termine di tutta la sessione.
-
-12.7  Export CSV — formato da verificare
+12.5  Export CSV — formato da verificare
 Testare l'import del formato attuale su una lega reale LegheFantacalcio.
 Se i commenti "# NomeSquadra" non sono supportati, esportare un file
 per squadra oppure rimuovere i commenti.
 
-12.8  Notifiche sonore
-Web Audio API richiede gesto preventivo utente. Implementare un bottone
-"Attiva suoni" nella lobby prima dell'inizio asta.
-
-12.9  Asta di riparazione
+12.6  Asta di riparazione
 Non inclusa in MVP. Struttura dati già predisposta.
-UI da implementare in V1.1.
+Specifiche dettagliate in NEXT_EVOLUTIONS.md.
+
+12.7  Storico sessioni banditore
+Non incluso in MVP. Il banditore non ha visibilità delle sessioni passate.
+Da implementare in V1.4 con collection users/{uid}/sessions.
 
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -642,18 +681,26 @@ UI da implementare in V1.1.
   23  Tema dark "Electric Noir"                           ✅ Done
   24  Fix bug auth import SessionRouter/Lobby             ✅ Done
   25  Fix bug import query/where/orderBy ActiveAuction    ✅ Done
-  26  Home.tsx — miglioramenti UX + fix retry anonimo     ⬜ TODO
-  27  Schermata riepilogo finale                          ⬜ TODO   V1.0
-  28  Notifiche sonore/vibrazione                         ⬜ TODO   V1.0
-  29  Heartbeat connessione partecipanti                  ⬜ TODO   V1.1
-  30  bidCount server-side                                ⬜ TODO   V1.1
-  31  Storico sessioni banditore                          ⬜ TODO   V1.1
-  32  Export CSV formato verificato su LegheFC            ⬜ TODO   Test
-  33  Monetizzazione / freemium                           ⬜ TODO   V2.0
-  34  TV mode / proiezione schermo esterno                ⬜ TODO   V2.0
-  35  Asta di riparazione                                 ⬜ TODO   V2.0
+  26  Login Google/Apple/Microsoft per tutti i ruoli      ✅ Done   v1.3
+  27  Recupero sessione via localStorage                  ✅ Done   v1.3
+  28  Connessione/disconnessione partecipanti             ✅ Done   v1.3
+  29  Toggle suoni/vibrazione per utente (Web Audio API)  ✅ Done   v1.3
+  30  Tasto "Non partecipo" con contatore globale         ✅ Done   v1.3
+  31  bidCount server-side (Firestore trigger)            ✅ Done   v1.3
+  32  Ordinamento casuale stabile (shuffleSeed)           ✅ Done   v1.3
+  33  Filtro multiruolo Mantra + badge colorati           ✅ Done   v1.3
+  34  "Venduto a te" vs "venduto ad altri" nel listone    ✅ Done   v1.3
+  35  TV mode — schermata proiezione sola lettura         ✅ Done   v1.3
+  36  Confirm singolo chiusura anticipata busta           ✅ Done   v1.3
+  37  Tasto "Nuova sessione" in AuctionSummary            ✅ Done   v1.3
+  38  Nome sessione (sessionName) + campo creazione       ✅ Done   v1.3
+  39  Schermata riepilogo finale (AuctionSummary)         ✅ Done   v1.3
+  40  Storico sessioni banditore                          ⬜ TODO   V1.4
+  41  Export CSV formato verificato su LegheFC            ⬜ TODO   Test
+  42  Monetizzazione / freemium                           ⬜ TODO   V2.0
+  43  Asta di riparazione                                 ⬜ TODO   V2.0
 
 
 ================================================================================
-Busta Chiusa — Documento Progettuale v1.2 — Aprile 2026
+Busta Chiusa — Documento Progettuale v1.3 — Aprile 2026
 ================================================================================

@@ -4,6 +4,16 @@ import { db, parseMantraRoles } from "../firebase";
 import { useSession } from "../pages/SessionRouter";
 import { Download } from "lucide-react";
 
+function getRoleBadgeColor(role: string): string {
+  if (role === "P" || role === "Por") return "bg-yellow-500/20 text-yellow-400 border-yellow-500/40";
+  if (["D", "Dc", "Dd", "Ds", "B"].includes(role)) return "bg-green-500/20 text-green-400 border-green-500/40";
+  if (["E", "M", "C"].includes(role)) return "bg-blue-500/20 text-blue-400 border-blue-500/40";
+  if (["T", "W"].includes(role)) return "bg-purple-500/20 text-purple-400 border-purple-500/40";
+  if (["A", "Pc"].includes(role)) return "bg-red-500/20 text-red-400 border-red-500/40";
+  return "bg-gray-500/20 text-gray-400 border-gray-500/40";
+}
+
+
 export default function RosterList() {
   const { sessionId, isBanditore, sessionData } = useSession();
   const [participants, setParticipants] = useState<any[]>([]);
@@ -82,12 +92,11 @@ export default function RosterList() {
     }
   };
 
-  const getRoleColor = (role: string) => {
-    if (role === "P" || role === "Por") return "text-yellow-400";
-    if (["D", "Dc", "Dd", "Ds", "B", "E"].includes(role)) return "text-green-400";
-    if (["C", "M", "T", "W"].includes(role)) return "text-blue-400";
-    if (["A", "Pc"].includes(role)) return "text-red-400";
-    return "text-gray-400";
+  // Parse all roles from roleRaw (mantra) or role (classic) for badge display
+  const getRosterPlayerBadges = (player: any): string[] => {
+    if (format === "classic") return player.role ? [player.role] : [];
+    const raw = parseMantraRoles(player.roleRaw || player.role || "");
+    return raw.length > 0 ? raw : player.role ? [player.role] : [];
   };
 
   const roles =
@@ -166,24 +175,31 @@ export default function RosterList() {
                 <div className="p-4 text-center text-[#5a5a90] text-sm">Rosa vuota</div>
               ) : (
                 <div className="divide-y divide-[#111128]">
-                  {roster.map((player: any) => (
-                    <div key={player.id} className="px-4 py-2.5 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className={`text-xs font-bold shrink-0 ${getRoleColor(player.role)}`}>
-                          {player.role}
-                        </span>
-                        <div className="min-w-0">
-                          <div className="font-medium text-sm truncate">{player.nome}</div>
-                          {format === "mantra" && player.roleRaw && player.roleRaw !== player.role && (
-                            <div className="text-xs text-[#5a5a90]">{player.roleRaw}</div>
-                          )}
+                  {roster.map((player: any) => {
+                    const badges = getRosterPlayerBadges(player);
+                    return (
+                      <div key={player.id} className="px-4 py-2.5 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="flex gap-1 shrink-0 flex-wrap">
+                            {badges.map((r) => (
+                              <span
+                                key={r}
+                                className={`text-xs font-bold px-1.5 py-0.5 rounded border ${getRoleBadgeColor(r)}`}
+                              >
+                                {r}
+                              </span>
+                            ))}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-medium text-sm truncate">{player.nome}</div>
+                          </div>
                         </div>
+                        <span className="font-mono text-sm text-[#00e5ff] shrink-0">
+                          {player.price} cr
+                        </span>
                       </div>
-                      <span className="font-mono text-sm text-[#00e5ff] shrink-0">
-                        {player.price} cr
-                      </span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 

@@ -21,6 +21,7 @@ export default function CreateSession() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
+  const [sessionName, setSessionName] = useState("");
   const [format, setFormat] = useState<"classic" | "mantra">("classic");
   const [budget, setBudget] = useState(500);
   const [timerDuration, setTimerDuration] = useState(30);
@@ -134,6 +135,7 @@ export default function CreateSession() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!sessionName.trim()) { setError("Inserisci il nome della sessione"); return; }
     if (!playerFile) { setError("Carica il listone (CSV o Excel)"); return; }
 
     setLoading(true);
@@ -162,7 +164,9 @@ export default function CreateSession() {
         : limits;
 
       const code = generateCode();
+      const shuffleSeed = Math.random();
       const sessionRef = await addDoc(collection(db, "sessions"), {
+        sessionName: sessionName.trim(),
         status: "lobby",
         format,
         budget,
@@ -174,6 +178,7 @@ export default function CreateSession() {
         auctionMode,
         randomRole: auctionMode === "random-role" ? randomRole : null,
         randomQueue: [],
+        shuffleSeed,
         createdAt: serverTimestamp(),
       });
 
@@ -219,6 +224,19 @@ export default function CreateSession() {
             Impostazioni generali
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-[#5a5a90] mb-1">
+                Nome sessione
+              </label>
+              <input
+                type="text"
+                value={sessionName}
+                onChange={(e) => setSessionName(e.target.value)}
+                placeholder="Es. Asta 2025 Lega Amici"
+                maxLength={60}
+                className="w-full bg-[#111128] border border-[#5a5a90]/30 rounded-lg px-4 py-2 text-white placeholder:text-[#2a2a48] focus:outline-none focus:border-[#00e5ff]"
+              />
+            </div>
             <div>
               <label className="block text-sm font-medium text-[#5a5a90] mb-1">Formato</label>
               <div className="flex gap-2">

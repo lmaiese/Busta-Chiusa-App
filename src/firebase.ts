@@ -3,8 +3,8 @@ import {
   getAuth,
   connectAuthEmulator,
   GoogleAuthProvider,
+  OAuthProvider,
   signInWithPopup,
-  signInAnonymously,
   signOut,
 } from "firebase/auth";
 import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
@@ -14,8 +14,6 @@ import firebaseConfig from "../firebase-applet-config.json";
 const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
-// In DEV the emulator only supports the default database.
-// In production use the named database from config (if set).
 export const db = import.meta.env.DEV
   ? getFirestore(app)
   : (firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== "(default)"
@@ -30,8 +28,15 @@ if (import.meta.env.DEV) {
 }
 
 // ── Auth helpers ─────────────────────────────────────────────────────────
-export const signInWithGoogle = () => signInWithPopup(auth, new GoogleAuthProvider());
-export const signInAsGuest = () => signInAnonymously(auth);
+export const signInWithGoogle = () =>
+  signInWithPopup(auth, new GoogleAuthProvider());
+
+export const signInWithApple = () =>
+  signInWithPopup(auth, new OAuthProvider("apple.com"));
+
+export const signInWithMicrosoft = () =>
+  signInWithPopup(auth, new OAuthProvider("microsoft.com"));
+
 export const logOut = () => signOut(auth);
 
 // ── Cloud Function callables ─────────────────────────────────────────────
@@ -66,7 +71,8 @@ export type MantraRole = (typeof MANTRA_ROLES)[number];
 
 export function parseMantraRoles(rm: string): string[] {
   if (!rm) return [];
-  return rm.split("/").map((r) => r.trim()).filter((r) => r.length > 0);
+  // LegheFantacalcio can use both "/" and ";" as role separators inside the Rm field
+  return rm.split(/[\/;,]/).map((r) => r.trim()).filter((r) => r.length > 0);
 }
 
 export function getPrimaryRole(player: { r?: string; rm?: string }, format: string): string {
@@ -86,7 +92,6 @@ export function getDefaultRosterLimits(format: string) {
   if (format === "classic") {
     return { P: { min: 3, max: 3 }, D: { min: 8, max: 8 }, C: { min: 8, max: 8 }, A: { min: 6, max: 6 } };
   }
-  // Mantra: only Por is constrained by role. All others unconstrained (total capped by totalRosterSize).
   return {
     Por: { min: 2, max: 3 },
     Dc: { min: 0, max: 99 },
@@ -141,4 +146,29 @@ export function handleFirestoreError(
   };
   console.error("Firestore Error:", JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
+}
+
+// ── Session localStorage helpers ─────────────────────────────────────────
+const SESSION_STORAGE_KEY = "bustachiusa_session";
+
+export interface SavedSession {
+  sessionId: string;
+  sessionName: string;
+  nickname?: string;
+  role: "banditore" | "participant";
+}
+
+export function saveSessionToStorage(session: SavedSession): void {
+  try { localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session)); } catch {}
+}
+
+export function loadSessionFromStorage(): SavedSession | null {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+export function clearSessionFromStorage(): void {
+  try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch {}
 }
